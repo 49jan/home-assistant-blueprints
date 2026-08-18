@@ -1,0 +1,276 @@
+blueprint:
+  name: "Rekuperator – nadzor po absolutni vlagi"
+  description: >
+    Avtomatsko upravljanje rekuperatorja/prezračevanja glede na PRIMERJAVO
+    ABSOLUTNE vlage (g/m³) notranjega in zunanjega zraka, ne po navadnih
+    odstotkih relativne vlažnosti. To prepreči napačno prezračevanje
+    (npr. pozimi, ko je zunaj RH% visok, a je zrak dejansko "suh").
+
+    Podpira dva tipa naprav:
+      - "fan"    – rekuperator z nastavljivo hitrostjo (fan.turn_on/off + set_percentage)
+      - "switch" – rekuperator kot navadno stikalo (switch.turn_on/off)
+
+    Logika:
+      1. Izračuna absolutno vlago (g/m³) notri in zunaj iz temperature + RH%.
+      2. Histereza: če je naprava izklopljena, se vklopi šele nad "prag vklopa";
+         če je vklopljena, ostane vklopljena dokler ne pade pod "prag izklopa".
+      3. Prezračevanje se izvede samo, če je zunanji zrak dovolj "suši" od
+         notranjega (razlika absolutne vlage > nastavljiva marža).
+      4. Temperaturna zaščita: izven nastavljenega temperaturnega razpona se
+         naprava vedno izklopi (varovalka pred zmrzovanjem/ekstremi).
+
+  domain: automation
+  source_url: https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO/blob/main/rekuperator_vlaga.yaml
+
+  input:
+    indoor_humidity_sensor:
+      name: Senzor notranje vlage (%)
+      selector:
+        entity:
+          domain: sensor
+          device_class: humidity
+
+    indoor_temp_sensor:
+      name: Senzor notranje temperature
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+
+    outdoor_humidity_sensor:
+      name: Senzor zunanje vlage (%)
+      selector:
+        entity:
+          domain: sensor
+          device_class: humidity
+
+    outdoor_temp_sensor:
+      name: Senzor zunanje temperature
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+
+    device_type:
+      name: Tip rekuperatorja
+      description: Izberi, ali je naprava "fan" (nastavljiva moč) ali "switch" (samo on/off)
+      default: "switch"
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - label: "Fan – nastavljiva moč pihanja"
+              value: "fan"
+            - label: "Switch – samo vklop/izklop"
+              value: "switch"
+
+    fan_entity:
+      name: Fan entiteta (izpolni, če je tip "fan")
+      default: ""
+      selector:
+        entity:
+          domain: fan
+
+    switch_entity:
+      name: Switch entiteta (izpolni, če je tip "switch")
+      default: ""
+      selector:
+        entity:
+          domain: switch
+
+    humidity_on_threshold:
+      name: Prag VKLOPA (notranja vlaga %)
+      description: Nad to vrednostjo se rekuperator vklopi (če je bil izklopljen)
+      default: 60
+      selector:
+        number:
+          min: 30
+          max: 90
+          step: 1
+          unit_of_measurement: "%"
+
+    humidity_off_threshold:
+      name: Prag IZKLOPA (notranja vlaga %)
+      description: Pod to vrednostjo se rekuperator izklopi (če je bil vklopljen). Naj bo nižji od praga vklopa.
+      default: 55
+      selector:
+        number:
+          min: 20
+          max: 89
+          step: 1
+          unit_of_measurement: "%"
+
+    ah_margin:
+      name: Minimalna razlika absolutne vlage (g/m³)
+      description: >
+        Kako veliko mora biti zunaj "suše" od notranjosti (v absolutni vlagi),
+        da se prezračevanje sploh izvede. Višja vrednost = bolj konzervativno.
+      default: 1.5
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 0.1
+          unit_of_measurement: "g/m³"
+
+    min_outdoor_temp:
+      name: Minimalna dovoljena zunanja temperatura
+      description: Pod to temperaturo se naprava vedno izklopi (zaščita pred zmrzovanjem izmenjevalnika)
+      default: -15
+      selector:
+        number:
+          min: -30
+          max: 10
+          step: 1
+          unit_of_measurement: "°C"
+
+    max_outdoor_temp:
+      name: Maksimalna dovoljena zunanja temperatura
+      description: Nad to temperaturo se naprava vedno izklopi
+      default: 35
+      selector:
+        number:
+          min: 20
+          max: 50
+          step: 1
+          unit_of_measurement: "°C"
+
+    fan_speed_low:
+      name: "Fan: nizka hitrost (%)"
+      description: Uporabljeno samo, če je tip naprave "fan"
+      default: 40
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+
+    fan_speed_high:
+      name: "Fan: visoka hitrost (%)"
+      description: Uporabljeno samo, če je tip naprave "fan"
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+
+    ah_diff_high:
+      name: "Fan: razlika AH za preklop na visoko hitrost (g/m³)"
+      description: Če je razlika absolutne vlage nad to vrednostjo, se uporabi visoka hitrost, sicer nizka.
+      default: 6
+      selector:
+        number:
+          min: 1
+          max: 20
+          step: 0.5
+          unit_of_measurement: "g/m³"
+
+trigger:
+  - platform: time_pattern
+    minutes: "/5"
+  - platform: state
+    entity_id: !input indoor_humidity_sensor
+  - platform: state
+    entity_id: !input outdoor_humidity_sensor
+  - platform: state
+    entity_id: !input outdoor_temp_sensor
+
+condition: []
+
+variables:
+  indoor_humidity_sensor: !input indoor_humidity_sensor
+  indoor_temp_sensor: !input indoor_temp_sensor
+  outdoor_humidity_sensor: !input outdoor_humidity_sensor
+  outdoor_temp_sensor: !input outdoor_temp_sensor
+  device_type: !input device_type
+  fan_entity: !input fan_entity
+  switch_entity: !input switch_entity
+  humidity_on_threshold: !input humidity_on_threshold
+  humidity_off_threshold: !input humidity_off_threshold
+  ah_margin: !input ah_margin
+  min_outdoor_temp: !input min_outdoor_temp
+  max_outdoor_temp: !input max_outdoor_temp
+  fan_speed_low: !input fan_speed_low
+  fan_speed_high: !input fan_speed_high
+  ah_diff_high: !input ah_diff_high
+
+  indoor_t: "{{ states(indoor_temp_sensor) | float(0) }}"
+  outdoor_t: "{{ states(outdoor_temp_sensor) | float(0) }}"
+  indoor_rh: "{{ states(indoor_humidity_sensor) | float(0) }}"
+  outdoor_rh: "{{ states(outdoor_humidity_sensor) | float(0) }}"
+
+  # Magnusova formula za absolutno vlago (g/m³)
+  indoor_ah: >
+    {{ (6.112 * exp((17.67 * indoor_t) / (indoor_t + 243.5)) * indoor_rh * 2.1674 / (273.15 + indoor_t)) | round(2) }}
+  outdoor_ah: >
+    {{ (6.112 * exp((17.67 * outdoor_t) / (outdoor_t + 243.5)) * outdoor_rh * 2.1674 / (273.15 + outdoor_t)) | round(2) }}
+
+  ah_diff: "{{ (indoor_ah | float) - (outdoor_ah | float) }}"
+
+  currently_on: >
+    {% if device_type == 'fan' %}
+      {{ is_state(fan_entity, 'on') }}
+    {% else %}
+      {{ is_state(switch_entity, 'on') }}
+    {% endif %}
+
+  humidity_ok: >
+    {% if currently_on %}
+      {{ indoor_rh > (humidity_off_threshold | float) }}
+    {% else %}
+      {{ indoor_rh > (humidity_on_threshold | float) }}
+    {% endif %}
+
+  outdoor_drier: "{{ (ah_diff | float) > (ah_margin | float) }}"
+
+  temp_ok: >
+    {{ (outdoor_t | float) >= (min_outdoor_temp | float) and (outdoor_t | float) <= (max_outdoor_temp | float) }}
+
+  should_run: "{{ humidity_ok and outdoor_drier and temp_ok }}"
+
+  fan_percentage: >
+    {% if (ah_diff | float) >= (ah_diff_high | float) %}
+      {{ fan_speed_high }}
+    {% else %}
+      {{ fan_speed_low }}
+    {% endif %}
+
+action:
+  - choose:
+      # --- Tip: FAN (nastavljiva moč) ---
+      - conditions: "{{ device_type == 'fan' }}"
+        sequence:
+          - choose:
+              - conditions: "{{ should_run }}"
+                sequence:
+                  - service: fan.turn_on
+                    target:
+                      entity_id: !input fan_entity
+                  - service: fan.set_percentage
+                    target:
+                      entity_id: !input fan_entity
+                    data:
+                      percentage: "{{ fan_percentage | int }}"
+            default:
+              - service: fan.turn_off
+                target:
+                  entity_id: !input fan_entity
+
+      # --- Tip: SWITCH (samo on/off) ---
+      - conditions: "{{ device_type == 'switch' }}"
+        sequence:
+          - choose:
+              - conditions: "{{ should_run }}"
+                sequence:
+                  - service: switch.turn_on
+                    target:
+                      entity_id: !input switch_entity
+            default:
+              - service: switch.turn_off
+                target:
+                  entity_id: !input switch_entity
+
+mode: single
