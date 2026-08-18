@@ -61,7 +61,7 @@ blueprint:
           options:
             - label: "Fan – nastavljiva moč pihanja"
               value: "fan"
-            - label: "Switch – samo vklop/izklop"
+            - label: "Switch/Light – samo vklop/izklop"
               value: "switch"
 
     fan_entity:
@@ -72,11 +72,11 @@ blueprint:
           domain: fan
 
     switch_entity:
-      name: Switch entiteta (izpolni, če je tip "switch")
+      name: Switch/Light entiteta (izpolni, če je tip "switch/light")
       default: ""
       selector:
         entity:
-          domain: switch
+          domain: light
 
     humidity_on_threshold:
       name: Prag VKLOPA (notranja vlaga %)
@@ -259,17 +259,17 @@ action:
                 target:
                   entity_id: !input fan_entity
 
-      # --- Tip: SWITCH (samo on/off) ---
+      # --- Tip: SWITCH/LIGHT (samo on/off) ---
       - conditions: "{{ device_type == 'switch' }}"
         sequence:
           - choose:
               - conditions: "{{ should_run }}"
                 sequence:
-                  - service: switch.turn_on
+                  - service: light.turn_on
                     target:
                       entity_id: !input switch_entity
             default:
-              - service: switch.turn_off
+              - service: light.turn_off
                 target:
                   entity_id: !input switch_entity
 
