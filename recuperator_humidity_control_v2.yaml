@@ -1,86 +1,219 @@
+
+/
+Claude finished the response
+Rabil bi template za Automation, ki bi bil namenjen za rekuparator. Pri čemer imam 2 tipa rekuperatorjev. Eden kjer lahko upravljam vse (moč pihanja in ugašanje), medtem ko ima drug samo možnost on/off (kot stikalo). Uporablja se jih predvsem z namenom nižanje notranje vlage. Pri čemer obstaja senzor notranje in zunanje vlage in prav tako temperatura. Načeloma pa bi morda ob izredno visoki/nizki zunanji temperaturi želel, da morda ne dela (čeprav verjetno to za rekupertor ni problem?). Pripravi najprej načrt oz logiko za tak automation
+
+This response didn’t load.
+Rabil bi template za Automation, ki bi bil namenjen za rekuparator. Pri čemer imam 2 tipa rekuperatorjev. Eden kjer lahko upravljam vse (moč pihanja in ugašanje), medtem ko ima drug samo možnost on/off (kot stikalo). Uporablja se jih predvsem z namenom nižanje notranje vlage. Pri čemer obstaja senzor notranje in zunanje vlage in prav tako temperatura. Načeloma pa bi morda ob izredno visoki/nizki zunanji temperaturi želel, da morda ne dela (čeprav verjetno to za rekupertor ni problem?). Pripravi najprej načrt oz logiko za tak automation
+
+This response didn’t load.
+Rabil bi template za Automation, ki bi bil namenjen za rekuparator. Pri čemer imam 2 tipa rekuperatorjev. Eden kjer lahko upravljam vse (moč pihanja in ugašanje), medtem ko ima drug samo možnost on/off (kot stikalo). Uporablja se jih predvsem z namenom nižanje notranje vlage. Pri čemer obstaja senzor notranje in zunanje vlage in prav tako temperatura. Načeloma pa bi morda ob izredno visoki/nizki zunanji temperaturi želel, da morda ne dela (čeprav verjetno to za rekupertor ni problem?). Pripravi najprej načrt oz logiko za tak automation
+
+
+Thought for 11s
+Thought for 11s
+Logika za avtomatizacijo rekuperatorja (nadzor vlage)
+1. Osnovni princip
+Rekuperator naj deluje le takrat, ko ventiliranje dejansko zniža notranjo vlago – ne pa vsakič, ko je notranja vlaga visoka. To je ključna točka, ki jo veliko avtomatizacij naredi narobe.
+
+Pomembno: primerjava relativne vlažnosti (RH%) med notranjostjo in zunanjostjo je zavajajoča, ker je RH% odvisna od temperature. Pravilneje je primerjati absolutno vlago (g/m³) ali rosišče (dew point) – ker le to pove, ali zunanji zrak dejansko vsebuje manj vodne pare kot notranji.
+
+Primer: zunaj je 5°C in 90% RH, notri 21°C in 55% RH → po RH% bi rekli "zunaj je bolj vlažno, ne prezračuj". V resnici pa ima ta hladen zrak veliko manj vodne pare (absolutno), zato bi prezračevanje znižalo notranjo vlago. Klasična napaka.
+Torej priporočam izračunati absolutno vlago (ali rosišče) iz temperature + RH% za obe strani, in primerjati to.
+
+Če ti je to preveč zapleteno/ne želiš dodatnega template senzorja, lahko uporabimo poenostavljeno različico (primerjava RH% z varnostno rezervo), a bo manj natančna – to je stvar odločitve, ne napaka.
+
+2. Potrebni vhodni podatki (entitete)
+sensor.notranja_vlaga (RH%)
+sensor.zunanja_vlaga (RH%)
+sensor.notranja_temp
+sensor.zunanja_temp
+(opcijsko, izračunano) sensor.notranja_absolutna_vlaga, sensor.zunanja_absolutna_vlaga
+3. Pogoji za VKLOP prezračevanja
+Rekuperator naj se vklopi, ko so izpolnjeni VSI pogoji:
+
+Notranja vlaga > nastavljen prag (npr. 60%) — histereza za izklop pri npr. 55%, da se ne cika.
+Zunanji zrak je "suši" od notranjega za vsaj neko rezervo (absolutna vlaga zunaj < absolutna vlaga notri – margin, ali poenostavljeno: zunanja RH% < notranja RH% – margin).
+Zunanja temperatura je znotraj dovoljenega razpona (glej spodaj).
+4. Temperaturne omejitve
+Tehnično rekuperatorju (predvsem tistemu s toplotno izmenjavo) mraz/vročina ne škodi – ampak:
+
+Pri zelo nizkih zunanjih temperaturah (npr. pod -15°C) lahko pride do zmrzovanja izmenjevalnika pri nekaterih modelih (odvisno od naprave – pri pravem rekuperatorju s celico ponavadi ni problema, pri enostavnem prezračevalnem ventilatorju brez izmenjave pa boš izgubljal ogromno toplote).
+Pri zelo visokih zunanjih temperaturah poleti ventiliranje lahko dodatno segreva prostor (ni nujno problem za vlago, je pa za udobje).
+Predlog: nastaviva min/max mejo zunanje temperature (npr. -15°C in 35°C) kot varovalko, ki jo lahko po potrebi izklopiš/prilagodiš – ne bo pa to primarni pogoj, ampak "override" zaščita.
+
+5. Ločena obravnava dveh tipov naprav
+Tip A (fan z nastavljivo hitrostjo): lahko dodamo stopnjevanje moči glede na razliko vlage (npr. razlika 5–10% → nizka hitrost, >15% → visoka hitrost).
+Tip B (switch on/off): samo binarni vklop/izklop po istih pogojih, brez modulacije moči.
+To pomeni: en skupen "odločevalni" blok (kdaj sploh prezračevati) + ločena "izvedbena" veja za vsak tip naprave (choose v Home Assistantu, glede na domain naprave – fan vs switch).
+
+6. Histereza (da se ne vklaplja/izklaplja prepogosto)
+Vklop pri notranji vlagi > 60%
+Izklop pri notranji vlagi < 55%
+Minimalen čas delovanja (npr. 10 min) in minimalen čas premora med cikli, da motor ne "trza".
+7. Struktura predlagane rešitve
+(Opcijsko) Template senzorja za absolutno vlago notri/zunaj.
+En glavni automation (ali dva – trigger na spremembo vlage + periodičen time pattern check).
+choose/if-then veja glede na tip naprave (fan vs switch), z uporabo input_select ali direktno preverjanje domene entitete.
+Input helperji (input_number) za pragove, da jih lahko spreminjaš brez urejanja YAML: prag vklop/izklop vlage, margin med notranjo/zunanjo, min/max temp.
+Preden grem pisat YAML: mi lahko poveš:
+
+Ali želiš natančno (absolutna vlaga/rosišče) ali poenostavljeno (RH% primerjava) logiko?
+Točna imena/entity_id senzorjev in obeh naprav (fan + switch)?
+Kakšne mejne temperature želiš (privzeto predlagam -15°C / 35°C)?
+dajva natančno absolutno vlago
+Če narediva template, kiga uvozim iz github kot automation, verjetno so lahko potem ta imena senzorjev nastavljiva?
+Predlagaj ti
+
+Thought for 14s
+Thought for 14s
+Lahko pripraviš vse tekste in imena v ENG in omenjeno bi dala v https://github.com/49jan/home-assistant-blueprints kot verzijo v2
+
+
+Created a file, ran a command
+Created a file, ran a command
+I need to design a Home Assistant Blueprint for a recuperator automation, supporting two device types with configurable entity selectors, absolute humidity calculations via templates, and temperature limit logic, structured for v2 in their GitHub repo.
+
+I'm planning the blueprint inputs: indoor/outdoor humidity and temperature sensors, the ventilation device, a device type selector (variable-speed fan vs on/off switch), and fan speed settings. I'm working out the decision logic combining indoor humidity thresholds with absolute humidity comparisons between indoor and outdoor air to determine when ventilation should actually help.
+
+I'm defining turn-off conditions using hysteresis on indoor humidity, absolute humidity comparison, and temperature range checks, plus fan speed modulation based on the humidity differential. I'm setting up triggers combining a time pattern with humidity state changes, and working out the Magnus-Tetens approximation formula in Jinja to calculate absolute humidity from temperature and relative humidity readings.
+
+I realize I should use the automation's top-level variables: block to compute indoor and outdoor absolute humidity once, so those values are reusable across conditions and actions without duplicating the formula everywhere, and this works fine even when generated from a blueprint.
+
+Now I'm drafting the blueprint YAML itself, starting with the metadata (name, description, domain, source URL) and beginning to define the inputs like the indoor humidity sensor.
+
+Adding more config fields...
+
+Adding more config fields...
+
+Still writing automation config...
+
+Still defining template variables...
+
+Adding more device branches...
+
+Storing the !input value into a variable is a standard pattern that works fine. I'll just create the YAML file directly with create_file and present it, along with a short README explaining the formula, thresholds, and how to import the blueprint via URL from raw GitHub—no special document skill needed since this…
+
+Show less
+
+Home Assistant automation blueprint for recuperator/HRV humidity control (v2, English, using absolute humidity)
+
+Remove stale file so it can be recreated cleanly
+Sem napačno povedal, ne gre za switch ampak light entiteto (ali lahko popraviva da sta možni oba tipa)
+
+
+Thought for 6s
+Thought for 6s
+Da, lahko naredim tako, da on/off veja podpira oba – tako switch kot light – z eno samo izbiro (ne bo treba ločevati med njima). Uporabil bom generični homeassistant.turn_on / homeassistant.turn_off, ki deluje enako za switch.* in light.* entitete.
+
+
+Ran 3 commands, edited 3 files, viewed 2 files · 4 notes
+Ran 3 commands, edited 3 files, viewed 2 files · 4 notes
+Kaj se je spremenilo:
+
+ventilation_device selektor zdaj dovoljuje fan, switch in light entitete.
+"Device Type" opcija se zdaj imenuje "On/off device" (vrednost onoff_device) namesto "on/off switch" — velja tako za switch.* kot light.*.
+Servisni klici za on/off vejo uporabljajo generični homeassistant.turn_on / homeassistant.turn_off, ki delujeta enako na obeh domenah — ni ti treba ločeno izbirati, ali gre za switch ali light.
+Ostali dve stari datoteki (rekuperator_vlaga.yaml, rekuperator_vlaga_blueprint.yaml) v outputs mapi sta verjetno starejši/vmesni verziji iz prejšnjih korakov — če ju ne potrebuješ, lahko počistiva, sicer ju pusti mirno tam.
+
+
+Recuperator humidity control
+YAML 
+
+
+
+
+
+Claude is AI and can make mistakes. Please double-check responses.
+Recuperator humidity control · YAML
 blueprint:
-  name: "Rekuperator – nadzor po absolutni vlagi"
+  name: Recuperator / HRV Humidity-Based Control (v2)
   description: >
-    Avtomatsko upravljanje rekuperatorja/prezračevanja glede na PRIMERJAVO
-    ABSOLUTNE vlage (g/m³) notranjega in zunanjega zraka, ne po navadnih
-    odstotkih relativne vlažnosti. To prepreči napačno prezračevanje
-    (npr. pozimi, ko je zunaj RH% visok, a je zrak dejansko "suh").
-
-    Podpira dva tipa naprav:
-      - "fan"    – rekuperator z nastavljivo hitrostjo (fan.turn_on/off + set_percentage)
-      - "switch" – rekuperator kot navadno stikalo (switch.turn_on/off)
-
-    Logika:
-      1. Izračuna absolutno vlago (g/m³) notri in zunaj iz temperature + RH%.
-      2. Histereza: če je naprava izklopljena, se vklopi šele nad "prag vklopa";
-         če je vklopljena, ostane vklopljena dokler ne pade pod "prag izklopa".
-      3. Prezračevanje se izvede samo, če je zunanji zrak dovolj "suši" od
-         notranjega (razlika absolutne vlage > nastavljiva marža).
-      4. Temperaturna zaščita: izven nastavljenega temperaturnega razpona se
-         naprava vedno izklopi (varovalka pred zmrzovanjem/ekstremi).
-
+    Controls a heat-recovery ventilator (recuperator) based on **absolute humidity**
+    comparison between indoor and outdoor air, not just relative humidity (%).
+ 
+    Why absolute humidity? Relative humidity (%) alone is misleading: cold outdoor
+    air can show a high RH% while actually holding far less water vapor than warm
+    indoor air. This blueprint converts both indoor and outdoor temperature + RH%
+    into absolute humidity (g/m³) and only ventilates when outdoor air is genuinely
+    "drier" than indoor air by a configurable margin.
+ 
+    Supports two device types:
+      - **Variable fan** (fan.* entity with adjustable speed/percentage) — speed
+        is scaled based on how large the humidity difference is.
+      - **On/off device** (switch.* or light.* entity) — simple on/off control.
+ 
+    Includes an outdoor temperature safety range (default -15°C to 35°C) to avoid
+    running the unit in extreme conditions, and hysteresis thresholds to prevent
+    short-cycling.
+ 
+    Repository: https://github.com/49jan/home-assistant-blueprints
   domain: automation
-  source_url: https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO/blob/main/rekuperator_vlaga.yaml
-
+  source_url: https://raw.githubusercontent.com/49jan/home-assistant-blueprints/main/automation/recuperator_humidity_control.yaml
   input:
     indoor_humidity_sensor:
-      name: Senzor notranje vlage (%)
+      name: Indoor Humidity Sensor
+      description: Sensor reporting indoor relative humidity (%).
       selector:
         entity:
           domain: sensor
           device_class: humidity
-
-    indoor_temp_sensor:
-      name: Senzor notranje temperature
-      selector:
-        entity:
-          domain: sensor
-          device_class: temperature
-
+ 
     outdoor_humidity_sensor:
-      name: Senzor zunanje vlage (%)
+      name: Outdoor Humidity Sensor
+      description: Sensor reporting outdoor relative humidity (%).
       selector:
         entity:
           domain: sensor
           device_class: humidity
-
-    outdoor_temp_sensor:
-      name: Senzor zunanje temperature
+ 
+    indoor_temp_sensor:
+      name: Indoor Temperature Sensor
       selector:
         entity:
           domain: sensor
           device_class: temperature
-
+ 
+    outdoor_temp_sensor:
+      name: Outdoor Temperature Sensor
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+ 
+    ventilation_device:
+      name: Recuperator / Ventilation Device
+      description: >
+        The fan, switch, or light entity that controls the recuperator.
+        Must match the "Device Type" selected below.
+      selector:
+        entity:
+          domain:
+            - fan
+            - switch
+            - light
+ 
     device_type:
-      name: Tip rekuperatorja
-      description: Izberi, ali je naprava "fan" (nastavljiva moč) ali "switch" (samo on/off)
-      default: "switch"
+      name: Device Type
+      description: >
+        Choose "Variable fan" if the device supports adjustable speed
+        (fan.turn_on / fan.set_percentage), or "On/off device" if it only
+        supports on/off — this covers both switch.* and light.* entities,
+        since Home Assistant's generic homeassistant.turn_on/turn_off
+        services work for either domain.
+      default: variable_fan
       selector:
         select:
           mode: dropdown
           options:
-            - label: "Fan – nastavljiva moč pihanja"
-              value: "fan"
-            - label: "Switch/Light – samo vklop/izklop"
-              value: "switch"
-
-    fan_entity:
-      name: Fan entiteta (izpolni, če je tip "fan")
-      default: ""
-      selector:
-        entity:
-          domain: fan
-
-    switch_entity:
-      name: Switch/Light entiteta (izpolni, če je tip "switch/light")
-      default: ""
-      selector:
-        entity:
-          domain: light
-
+            - label: Variable speed fan (fan.* entity)
+              value: variable_fan
+            - label: Simple on/off device (switch.* or light.* entity)
+              value: onoff_device
+ 
     humidity_on_threshold:
-      name: Prag VKLOPA (notranja vlaga %)
-      description: Nad to vrednostjo se rekuperator vklopi (če je bil izklopljen)
+      name: Indoor Humidity ON Threshold (%)
+      description: Ventilation turns on when indoor humidity rises above this value.
       default: 60
       selector:
         number:
@@ -88,67 +221,93 @@ blueprint:
           max: 90
           step: 1
           unit_of_measurement: "%"
-
+          mode: box
+ 
     humidity_off_threshold:
-      name: Prag IZKLOPA (notranja vlaga %)
-      description: Pod to vrednostjo se rekuperator izklopi (če je bil vklopljen). Naj bo nižji od praga vklopa.
+      name: Indoor Humidity OFF Threshold (%)
+      description: >
+        Ventilation turns off when indoor humidity drops below this value.
+        Must be lower than the ON threshold to create hysteresis and avoid
+        short-cycling.
       default: 55
       selector:
         number:
           min: 20
-          max: 89
+          max: 90
           step: 1
           unit_of_measurement: "%"
-
-    ah_margin:
-      name: Minimalna razlika absolutne vlage (g/m³)
+          mode: box
+ 
+    absolute_humidity_margin:
+      name: Absolute Humidity Margin (g/m³)
       description: >
-        Kako veliko mora biti zunaj "suše" od notranjosti (v absolutni vlagi),
-        da se prezračevanje sploh izvede. Višja vrednost = bolj konzervativno.
-      default: 1.5
+        Minimum required difference between indoor and outdoor absolute
+        humidity before ventilation is allowed to start. Higher values make
+        the automation more conservative (only ventilates when clearly
+        beneficial).
+      default: 1.0
       selector:
         number:
-          min: 0
-          max: 10
+          min: 0.1
+          max: 5
           step: 0.1
           unit_of_measurement: "g/m³"
-
+          mode: box
+ 
     min_outdoor_temp:
-      name: Minimalna dovoljena zunanja temperatura
-      description: Pod to temperaturo se naprava vedno izklopi (zaščita pred zmrzovanjem izmenjevalnika)
+      name: Minimum Outdoor Temperature (°C)
+      description: >
+        Below this temperature, ventilation is forced off regardless of
+        humidity (safety limit, e.g. to avoid excessive heat loss or
+        potential frost issues on simple units).
       default: -15
       selector:
         number:
           min: -30
-          max: 10
+          max: 15
           step: 1
           unit_of_measurement: "°C"
-
+          mode: box
+ 
     max_outdoor_temp:
-      name: Maksimalna dovoljena zunanja temperatura
-      description: Nad to temperaturo se naprava vedno izklopi
+      name: Maximum Outdoor Temperature (°C)
+      description: Above this temperature, ventilation is forced off regardless of humidity.
       default: 35
       selector:
         number:
           min: 20
-          max: 50
+          max: 45
           step: 1
           unit_of_measurement: "°C"
-
+          mode: box
+ 
     fan_speed_low:
-      name: "Fan: nizka hitrost (%)"
-      description: Uporabljeno samo, če je tip naprave "fan"
-      default: 40
+      name: Fan Speed - Low (%)
+      description: Speed used when the humidity difference is small (variable fan only).
+      default: 33
       selector:
         number:
           min: 1
           max: 100
           step: 1
           unit_of_measurement: "%"
-
+          mode: box
+ 
+    fan_speed_medium:
+      name: Fan Speed - Medium (%)
+      description: Speed used when the humidity difference is moderate (variable fan only).
+      default: 66
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: box
+ 
     fan_speed_high:
-      name: "Fan: visoka hitrost (%)"
-      description: Uporabljeno samo, če je tip naprave "fan"
+      name: Fan Speed - High (%)
+      description: Speed used when the humidity difference is large (variable fan only).
       default: 100
       selector:
         number:
@@ -156,121 +315,140 @@ blueprint:
           max: 100
           step: 1
           unit_of_measurement: "%"
-
-    ah_diff_high:
-      name: "Fan: razlika AH za preklop na visoko hitrost (g/m³)"
-      description: Če je razlika absolutne vlage nad to vrednostjo, se uporabi visoka hitrost, sicer nizka.
-      default: 6
+          mode: box
+ 
+    check_interval_minutes:
+      name: Periodic Check Interval (minutes)
+      description: >
+        In addition to reacting to sensor changes, the automation
+        re-evaluates on this fixed interval as a safety net.
+      default: 10
       selector:
         number:
           min: 1
-          max: 20
-          step: 0.5
-          unit_of_measurement: "g/m³"
-
+          max: 60
+          step: 1
+          unit_of_measurement: min
+          mode: box
+ 
 trigger:
   - platform: time_pattern
-    minutes: "/5"
+    minutes: !input check_interval_minutes
   - platform: state
     entity_id: !input indoor_humidity_sensor
   - platform: state
     entity_id: !input outdoor_humidity_sensor
   - platform: state
     entity_id: !input outdoor_temp_sensor
-
-condition: []
-
+ 
 variables:
   indoor_humidity_sensor: !input indoor_humidity_sensor
-  indoor_temp_sensor: !input indoor_temp_sensor
   outdoor_humidity_sensor: !input outdoor_humidity_sensor
+  indoor_temp_sensor: !input indoor_temp_sensor
   outdoor_temp_sensor: !input outdoor_temp_sensor
+  ventilation_device: !input ventilation_device
   device_type: !input device_type
-  fan_entity: !input fan_entity
-  switch_entity: !input switch_entity
   humidity_on_threshold: !input humidity_on_threshold
   humidity_off_threshold: !input humidity_off_threshold
-  ah_margin: !input ah_margin
+  ah_margin: !input absolute_humidity_margin
   min_outdoor_temp: !input min_outdoor_temp
   max_outdoor_temp: !input max_outdoor_temp
   fan_speed_low: !input fan_speed_low
+  fan_speed_medium: !input fan_speed_medium
   fan_speed_high: !input fan_speed_high
-  ah_diff_high: !input ah_diff_high
-
-  indoor_t: "{{ states(indoor_temp_sensor) | float(0) }}"
-  outdoor_t: "{{ states(outdoor_temp_sensor) | float(0) }}"
+ 
   indoor_rh: "{{ states(indoor_humidity_sensor) | float(0) }}"
   outdoor_rh: "{{ states(outdoor_humidity_sensor) | float(0) }}"
-
-  # Magnusova formula za absolutno vlago (g/m³)
-  indoor_ah: >
-    {{ (6.112 * exp((17.67 * indoor_t) / (indoor_t + 243.5)) * indoor_rh * 2.1674 / (273.15 + indoor_t)) | round(2) }}
-  outdoor_ah: >
-    {{ (6.112 * exp((17.67 * outdoor_t) / (outdoor_t + 243.5)) * outdoor_rh * 2.1674 / (273.15 + outdoor_t)) | round(2) }}
-
-  ah_diff: "{{ (indoor_ah | float) - (outdoor_ah | float) }}"
-
-  currently_on: >
-    {% if device_type == 'fan' %}
-      {{ is_state(fan_entity, 'on') }}
-    {% else %}
-      {{ is_state(switch_entity, 'on') }}
-    {% endif %}
-
-  humidity_ok: >
-    {% if currently_on %}
-      {{ indoor_rh > (humidity_off_threshold | float) }}
-    {% else %}
-      {{ indoor_rh > (humidity_on_threshold | float) }}
-    {% endif %}
-
-  outdoor_drier: "{{ (ah_diff | float) > (ah_margin | float) }}"
-
-  temp_ok: >
-    {{ (outdoor_t | float) >= (min_outdoor_temp | float) and (outdoor_t | float) <= (max_outdoor_temp | float) }}
-
-  should_run: "{{ humidity_ok and outdoor_drier and temp_ok }}"
-
-  fan_percentage: >
-    {% if (ah_diff | float) >= (ah_diff_high | float) %}
-      {{ fan_speed_high }}
-    {% else %}
-      {{ fan_speed_low }}
-    {% endif %}
-
+  indoor_t: "{{ states(indoor_temp_sensor) | float(0) }}"
+  outdoor_t: "{{ states(outdoor_temp_sensor) | float(0) }}"
+ 
+  # Absolute humidity (g/m3) via Magnus-Tetens approximation
+  indoor_ah: >-
+    {% set t = indoor_t %}
+    {% set rh = indoor_rh %}
+    {{ (6.112 * exp((17.67 * t) / (t + 243.5)) * rh * 2.1674 / (273.15 + t)) | round(2) }}
+  outdoor_ah: >-
+    {% set t = outdoor_t %}
+    {% set rh = outdoor_rh %}
+    {{ (6.112 * exp((17.67 * t) / (t + 243.5)) * rh * 2.1674 / (273.15 + t)) | round(2) }}
+ 
+  ah_diff: "{{ (indoor_ah | float - outdoor_ah | float) | round(2) }}"
+  temp_ok: "{{ outdoor_t >= min_outdoor_temp and outdoor_t <= max_outdoor_temp }}"
+ 
+  should_ventilate: >-
+    {{ temp_ok and indoor_rh >= humidity_on_threshold and ah_diff >= ah_margin }}
+  should_stop: >-
+    {{ not temp_ok or indoor_rh <= humidity_off_threshold or ah_diff < ah_margin }}
+ 
 action:
   - choose:
-      # --- Tip: FAN (nastavljiva moč) ---
-      - conditions: "{{ device_type == 'fan' }}"
+      # 1) Safety: outdoor temperature outside allowed range -> force off
+      - conditions: "{{ not temp_ok }}"
         sequence:
           - choose:
-              - conditions: "{{ should_run }}"
+              - conditions: "{{ device_type == 'variable_fan' }}"
                 sequence:
-                  - service: fan.turn_on
+                  - action: fan.turn_off
                     target:
-                      entity_id: !input fan_entity
-                  - service: fan.set_percentage
+                      entity_id: "{{ ventilation_device }}"
+              - conditions: "{{ device_type == 'onoff_device' }}"
+                sequence:
+                  - action: homeassistant.turn_off
                     target:
-                      entity_id: !input fan_entity
-                    data:
-                      percentage: "{{ fan_percentage | int }}"
-            default:
-              - service: fan.turn_off
-                target:
-                  entity_id: !input fan_entity
-
-      # --- Tip: SWITCH/LIGHT (samo on/off) ---
-      - conditions: "{{ device_type == 'switch' }}"
+                      entity_id: "{{ ventilation_device }}"
+ 
+      # 2) Conditions favor ventilation -> turn on (with speed tiering for fans)
+      - conditions: "{{ should_ventilate }}"
         sequence:
           - choose:
-              - conditions: "{{ should_run }}"
+              - conditions: "{{ device_type == 'variable_fan' }}"
                 sequence:
-                  - service: light.turn_on
+                  - choose:
+                      - conditions: "{{ ah_diff >= (ah_margin * 3) }}"
+                        sequence:
+                          - action: fan.turn_on
+                            target:
+                              entity_id: "{{ ventilation_device }}"
+                            data:
+                              percentage: "{{ fan_speed_high }}"
+                      - conditions: "{{ ah_diff >= (ah_margin * 1.5) }}"
+                        sequence:
+                          - action: fan.turn_on
+                            target:
+                              entity_id: "{{ ventilation_device }}"
+                            data:
+                              percentage: "{{ fan_speed_medium }}"
+                    default:
+                      - action: fan.turn_on
+                        target:
+                          entity_id: "{{ ventilation_device }}"
+                        data:
+                          percentage: "{{ fan_speed_low }}"
+              - conditions: "{{ device_type == 'onoff_device' }}"
+                sequence:
+                  - action: homeassistant.turn_on
                     target:
-                      entity_id: !input switch_entity
-            default:
-              - service: light.turn_off
-                target:
-                  entity_id: !input switch_entity
-
+                      entity_id: "{{ ventilation_device }}"
+ 
+      # 3) Conditions favor stopping -> turn off
+      - conditions: "{{ should_stop }}"
+        sequence:
+          - choose:
+              - conditions: "{{ device_type == 'variable_fan' }}"
+                sequence:
+                  - action: fan.turn_off
+                    target:
+                      entity_id: "{{ ventilation_device }}"
+              - conditions: "{{ device_type == 'onoff_device' }}"
+                sequence:
+                  - action: homeassistant.turn_off
+                    target:
+                      entity_id: "{{ ventilation_device }}"
+ 
+    # 4) Neither should_ventilate nor should_stop -> hysteresis "hold" zone,
+    #    keep current state, do nothing.
+    default: []
+ 
 mode: single
+max_exceeded: silent
+ 
