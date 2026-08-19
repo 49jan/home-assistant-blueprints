@@ -21,7 +21,7 @@ blueprint:
 
     Repository: https://github.com/49jan/home-assistant-blueprints
   domain: automation
-  source_url: https://raw.githubusercontent.com/49jan/home-assistant-blueprints/main/automation/recuperator_humidity_control.yaml
+  source_url: https://raw.githubusercontent.com/49jan/home-assistant-blueprints/main/recuperator_humidity_control_v2.yaml
   input:
     indoor_humidity_sensor:
       name: Indoor Humidity Sensor
