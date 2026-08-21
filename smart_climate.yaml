@@ -15,8 +15,9 @@ blueprint:
       - samostojno, neodvisno razvlaževanje (DRY) glede na vlago,
       - vztrajnost pred vklopom in "cool-down" po izklopu, da se prepreči
         nihanje okoli praga.
+    Repository: https://github.com/49jan/home-assistant-blueprints
   domain: automation
-  source_url: null
+  source_url: https://raw.githubusercontent.com/49jan/home-assistant-blueprints/main/smart_climate.yaml
   input:
     climate_entity:
       name: Klimatska naprava
