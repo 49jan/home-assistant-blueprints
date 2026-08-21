@@ -15,9 +15,7 @@ blueprint:
       - samostojno, neodvisno razvlaževanje (DRY) glede na vlago,
       - vztrajnost pred vklopom in "cool-down" po izklopu, da se prepreči
         nihanje okoli praga.
-    Repository: https://github.com/49jan/home-assistant-blueprints
   domain: automation
-  source_url: https://raw.githubusercontent.com/49jan/home-assistant-blueprints/main/smart_climate.yaml
   input:
     climate_entity:
       name: Klimatska naprava
@@ -236,7 +234,7 @@ trigger_variables:
 
 triggers:
   - trigger: state
-    entity_id: !input person_entity
+    entity_id: !input person_entities
     alias: Sprememba prisotnosti
   - trigger: state
     entity_id: !input temp_sensors
@@ -284,7 +282,7 @@ triggers:
 
 variables:
   climate_entity_id: !input climate_entity
-  person_entity_id: !input person_entity
+  person_entity_ids: !input person_entities
   presence_distance_km: !input presence_distance_km
   temp_sensor_ids: !input temp_sensors
   humidity_sensor_ids: !input humidity_sensors
@@ -308,8 +306,21 @@ variables:
   target_temp: >-
     {{ target_temp_hot if outside_temp >= outside_threshold else target_temp_mild }}
   delta_temp: "{{ (current_temp - target_temp) | round(1) }}"
-  distance_from_home: "{{ distance(person_entity_id) | float(9999) }}"
-  is_near_home: "{{ distance_from_home <= presence_distance_km }}"
+  is_present: >-
+    {% if person_entity_ids | length == 0 %}
+      true
+    {% else %}
+      {% set any_home = person_entity_ids | map('states') | select('eq', 'home') | list | length > 0 %}
+      {% set ns = namespace(dists=[]) %}
+      {% for p in person_entity_ids %}
+        {% set d = distance(p) %}
+        {% if d is not none %}
+          {% set ns.dists = ns.dists + [d | float] %}
+        {% endif %}
+      {% endfor %}
+      {% set near = (ns.dists | min <= presence_distance_km) if ns.dists | length > 0 else false %}
+      {{ any_home or near }}
+    {% endif %}
   humidity_high: "{{ current_humidity > humidity_dry_threshold }}"
   climate_state: "{{ states(climate_entity_id) }}"
   climate_set_temp: "{{ state_attr(climate_entity_id, 'temperature') | float(0) }}"
@@ -351,14 +362,9 @@ actions:
                 state: "off"
           - condition: or
             conditions:
-              - condition: and
-                alias: Nikogar doma in predaleč
-                conditions:
-                  - condition: state
-                    entity_id: !input person_entity
-                    state: not_home
-                  - condition: template
-                    value_template: "{{ not is_near_home }}"
+              - condition: template
+                alias: Nihče od izbranih ni doma niti v bližini
+                value_template: "{{ not is_present }}"
               - condition: template
                 alias: Pod varnostnim spodnjim pragom
                 value_template: "{{ current_temp < turn_off_low_temp }}"
@@ -430,13 +436,9 @@ actions:
               - condition: time
                 after: !input night_start
                 before: !input night_end
-          - condition: or
-            conditions:
-              - condition: state
-                entity_id: !input person_entity
-                state: home
-              - condition: template
-                value_template: "{{ is_near_home }}"
+          - condition: template
+            alias: Vsaj ena oseba doma/v bližini (ali preverjanje izklopljeno)
+            value_template: "{{ is_present }}"
         sequence:
           - action: climate.set_hvac_mode
             data:
@@ -474,13 +476,9 @@ actions:
           - condition: state
             entity_id: !input climate_entity
             state: "off"
-          - condition: or
-            conditions:
-              - condition: state
-                entity_id: !input person_entity
-                state: home
-              - condition: template
-                value_template: "{{ is_near_home }}"
+          - condition: template
+            alias: Vsaj ena oseba doma/v bližini (ali preverjanje izklopljeno)
+            value_template: "{{ is_present }}"
           - condition: not
             conditions:
               - condition: time
