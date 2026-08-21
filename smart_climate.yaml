@@ -1,0 +1,550 @@
+blueprint:
+  name: Pametna klima (prisotnost, temperatura, vlaga, zaščita pred zmrzovanjem)
+  description: >-
+    Samodejno upravljanje klimatske naprave glede na prisotnost (z razdaljo),
+    notranjo/zunanjo temperaturo (podpira VEČ senzorjev - uporabi se
+    povprečje) in vlago (podpira VEČ senzorjev - uporabi se najvišja
+    vrednost). Vključuje:
+      - dosledno preverjanje trenutnega stanja pred vsakim ukazom, da se
+        izognemo podvojenim/nepotrebnim ukazom (in posledičnemu piskanju),
+      - trdo nočno okno, ki se preveri ob VSAKEM sprožilcu (ne le enkrat
+        ob določeni uri), zato se hlajenje res ustavi in ostane ustavljeno,
+      - poenostavljeno, praktično preizkušeno zaščito pred zmrzovanjem
+        izparjevalnika: periodičen kratek preklop na FAN namesto kompleksne
+        logike,
+      - samostojno, neodvisno razvlaževanje (DRY) glede na vlago,
+      - vztrajnost pred vklopom in "cool-down" po izklopu, da se prepreči
+        nihanje okoli praga.
+  domain: automation
+  source_url: null
+  input:
+    climate_entity:
+      name: Klimatska naprava
+      selector:
+        entity:
+          domain: climate
+    person_entities:
+      name: Osebe (za zaznavo prisotnosti)
+      description: >-
+        Izberi eno ali VEČ oseb - klima ostane vklopljena/se lahko vklopi,
+        če je VSAJ ENA od njih doma ali v bližini. Če ne izbereš nobene
+        osebe, se preverjanje prisotnosti popolnoma IZKLOPI (klima deluje
+        samo glede na temperaturo/vlago/uro, ne glede na to, ali je kdo
+        doma).
+      default: []
+      selector:
+        entity:
+          domain: person
+          multiple: true
+    presence_distance_km:
+      name: Toleranca razdalje od doma
+      description: >-
+        Če je oseba izven doma, a znotraj te razdalje, se klima ne izklopi.
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.5
+          unit_of_measurement: km
+          mode: box
+    temp_sensors:
+      name: Notranji temperaturni senzor(ji)
+      description: >-
+        Lahko izbereš enega ali več senzorjev. Če jih izbereš več, se
+        uporabi POVPREČJE vseh vrednosti.
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+          multiple: true
+    humidity_sensors:
+      name: Senzor(ji) vlage
+      description: >-
+        Lahko izbereš enega ali več senzorjev. Če jih izbereš več, se
+        uporabi NAJVIŠJA vrednost med njimi (varnejše za odločitev o
+        razvlaževanju).
+      selector:
+        entity:
+          domain: sensor
+          device_class: humidity
+          multiple: true
+    outside_temp_sensor:
+      name: Zunanji temperaturni senzor
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    target_temp_mild:
+      name: Ciljna temperatura - blago vreme
+      description: Uporabi se, ko je zunanja temperatura POD pragom "vroče vreme".
+      default: 24
+      selector:
+        number:
+          min: 18
+          max: 30
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: box
+    target_temp_hot:
+      name: Ciljna temperatura - vroče vreme
+      description: Uporabi se, ko je zunanja temperatura NAD pragom "vroče vreme".
+      default: 23
+      selector:
+        number:
+          min: 18
+          max: 30
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: box
+    outside_threshold:
+      name: Prag zunanje temperature za "vroče vreme"
+      default: 26
+      selector:
+        number:
+          min: 18
+          max: 40
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: box
+    turn_on_delta:
+      name: Delta za VKLOP
+      description: >-
+        Klima se vklopi, ko notranja temperatura preseže ciljno za vsaj
+        toliko stopinj.
+      default: 1
+      selector:
+        number:
+          min: 0.2
+          max: 5
+          step: 0.1
+          unit_of_measurement: "°C"
+          mode: box
+    turn_off_delta:
+      name: Delta za IZKLOP (histereza)
+      description: >-
+        Klima se izklopi, ko je notranja temperatura znotraj te razlike od
+        cilja. Naj bo manjša od "Delta za VKLOP", da se prepreči nihanje.
+      default: 0.5
+      selector:
+        number:
+          min: 0.1
+          max: 3
+          step: 0.1
+          unit_of_measurement: "°C"
+          mode: box
+    turn_off_low_temp:
+      name: Varnostni spodnji prag
+      description: Pod to temperaturo se klima VEDNO izklopi, ne glede na drugo.
+      default: 23
+      selector:
+        number:
+          min: 15
+          max: 26
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: box
+    outside_cooler_margin:
+      name: Razlika za "zunaj je dovolj hladneje"
+      description: >-
+        Če je zunaj vsaj toliko stopinj hladneje kot znotraj, se klima
+        izklopi/ne vklopi (naravno ohlajanje naj opravi delo).
+      default: 2
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: box
+    humidity_dry_threshold:
+      name: Prag vlage za razvlaževanje
+      default: 60
+      selector:
+        number:
+          min: 30
+          max: 90
+          step: 1
+          unit_of_measurement: "%"
+          mode: box
+    sustained_minutes:
+      name: Vztrajnost pred vklopom
+      description: >-
+        Toliko minut mora pregretost držati neprekinjeno, preden se klima
+        vklopi (izloči kratkotrajne skoke, npr. sonce na senzorju).
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    cooldown_minutes:
+      name: "Cool-down perioda po izklopu"
+      description: Toliko minut po izklopu se klima ne more takoj znova vklopiti.
+      default: 20
+      selector:
+        number:
+          min: 0
+          max: 60
+          step: 1
+          unit_of_measurement: min
+          mode: box
+    night_start:
+      name: Začetek nočnega okna (klima ne sme delati)
+      default: "23:00:00"
+      selector:
+        time: {}
+    night_end:
+      name: Konec nočnega okna
+      default: "07:00:00"
+      selector:
+        time: {}
+    fan_cycle_hours:
+      name: Interval FAN cikla proti zmrzovanju
+      description: >-
+        Po tolikšnem NEPREKINJENEM hlajenju se klima za kratek čas preklopi
+        na FAN (samo ventilator), da se prepreči zmrzovanje lamel.
+      default: 2
+      selector:
+        number:
+          min: 0.5
+          max: 6
+          step: 0.5
+          unit_of_measurement: h
+          mode: box
+    fan_cycle_minutes:
+      name: Trajanje FAN cikla
+      default: 10
+      selector:
+        number:
+          min: 2
+          max: 30
+          step: 1
+          unit_of_measurement: min
+          mode: box
+
+trigger_variables:
+  temp_sensor_ids: !input temp_sensors
+  outside_sensor_id: !input outside_temp_sensor
+  target_temp_mild_tv: !input target_temp_mild
+  target_temp_hot_tv: !input target_temp_hot
+  outside_threshold_tv: !input outside_threshold
+  turn_on_delta_tv: !input turn_on_delta
+
+triggers:
+  - trigger: state
+    entity_id: !input person_entity
+    alias: Sprememba prisotnosti
+  - trigger: state
+    entity_id: !input temp_sensors
+    for:
+      seconds: 30
+    alias: Sprememba notranje temperature (z majhnim zamikom)
+  - trigger: state
+    entity_id: !input humidity_sensors
+    for:
+      seconds: 30
+    alias: Sprememba vlage (z majhnim zamikom)
+  - trigger: state
+    entity_id: !input outside_temp_sensor
+    for:
+      seconds: 30
+    alias: Sprememba zunanje temperature
+  - trigger: time
+    at: !input night_start
+    id: NightStart
+    alias: Začetek nočnega okna
+  - trigger: time_pattern
+    minutes: /5
+    id: PeriodicCheck
+    alias: Varnostno periodično preverjanje (vsakih 5 min)
+  - trigger: state
+    entity_id: !input climate_entity
+    to: cool
+    for:
+      hours: !input fan_cycle_hours
+    id: FanCycle
+    alias: Neprekinjeno hlajenje - čas za preventivni FAN cikel
+  - trigger: template
+    id: SustainedHeat
+    alias: Notranja temperatura vztrajno nad ciljem (za vklop)
+    value_template: >-
+      {% set outside = states(outside_sensor_id) | float(24) %}
+      {% set target = target_temp_hot_tv if outside >= outside_threshold_tv
+         else target_temp_mild_tv %}
+      {% set temps = temp_sensor_ids | map('states') | map('float', 0) | list %}
+      {% set inside = (temps | sum / temps | length) | round(1)
+         if temps | length > 0 else 23 %}
+      {{ (inside - target) > turn_on_delta_tv }}
+    for:
+      minutes: !input sustained_minutes
+
+variables:
+  climate_entity_id: !input climate_entity
+  person_entity_id: !input person_entity
+  presence_distance_km: !input presence_distance_km
+  temp_sensor_ids: !input temp_sensors
+  humidity_sensor_ids: !input humidity_sensors
+  outside_sensor_id: !input outside_temp_sensor
+  target_temp_mild: !input target_temp_mild
+  target_temp_hot: !input target_temp_hot
+  outside_threshold: !input outside_threshold
+  turn_on_delta: !input turn_on_delta
+  turn_off_delta: !input turn_off_delta
+  turn_off_low_temp: !input turn_off_low_temp
+  outside_cooler_margin: !input outside_cooler_margin
+  humidity_dry_threshold: !input humidity_dry_threshold
+
+  outside_temp: "{{ states(outside_sensor_id) | float(24) }}"
+  current_temp: >-
+    {% set temps = temp_sensor_ids | map('states') | map('float', 0) | list %}
+    {{ (temps | sum / temps | length) | round(1) if temps | length > 0 else 23 }}
+  current_humidity: >-
+    {% set hums = humidity_sensor_ids | map('states') | map('float', 0) | list %}
+    {{ hums | max if hums | length > 0 else 0 }}
+  target_temp: >-
+    {{ target_temp_hot if outside_temp >= outside_threshold else target_temp_mild }}
+  delta_temp: "{{ (current_temp - target_temp) | round(1) }}"
+  distance_from_home: "{{ distance(person_entity_id) | float(9999) }}"
+  is_near_home: "{{ distance_from_home <= presence_distance_km }}"
+  humidity_high: "{{ current_humidity > humidity_dry_threshold }}"
+  climate_state: "{{ states(climate_entity_id) }}"
+  climate_set_temp: "{{ state_attr(climate_entity_id, 'temperature') | float(0) }}"
+
+mode: queued
+max: 10
+
+actions:
+  - choose:
+      # ---------------------------------------------------------------
+      # VEJA 1: NOČNI IZKLOP - trdo okno, preveri se ob VSAKEM sprožilcu,
+      # ne samo enkrat ob uri "night_start". Zato klima res ostane
+      # izklopljena celo noč, tudi če se kak drug pogoj/senzor spremeni.
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: not
+            conditions:
+              - condition: state
+                entity_id: !input climate_entity
+                state: "off"
+          - condition: time
+            after: !input night_start
+            before: !input night_end
+        sequence:
+          - action: climate.turn_off
+            target:
+              entity_id: !input climate_entity
+        alias: "NOČNI IZKLOP: znotraj nočnega okna in klima še ni izklopljena"
+
+      # ---------------------------------------------------------------
+      # VEJA 2: SPLOŠNI IZKLOP - odsotnost, prehladno, zunaj hladneje,
+      # ali praktično na cilju (brez potrebe po razvlaževanju)
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: not
+            conditions:
+              - condition: state
+                entity_id: !input climate_entity
+                state: "off"
+          - condition: or
+            conditions:
+              - condition: and
+                alias: Nikogar doma in predaleč
+                conditions:
+                  - condition: state
+                    entity_id: !input person_entity
+                    state: not_home
+                  - condition: template
+                    value_template: "{{ not is_near_home }}"
+              - condition: template
+                alias: Pod varnostnim spodnjim pragom
+                value_template: "{{ current_temp < turn_off_low_temp }}"
+              - condition: template
+                alias: Zunaj dovolj hladneje kot znotraj
+                value_template: "{{ outside_temp <= (current_temp - outside_cooler_margin) }}"
+              - condition: template
+                alias: Praktično na cilju, brez tveganja vlage
+                value_template: "{{ delta_temp < turn_off_delta and not humidity_high }}"
+        sequence:
+          - action: climate.turn_off
+            target:
+              entity_id: !input climate_entity
+        alias: "IZKLOP: odsotnost/prehladno/zunaj hladneje/na cilju"
+
+      # ---------------------------------------------------------------
+      # VEJA 3: PERIODIČNI FAN CIKEL - poenostavljena, praktično
+      # preizkušena zaščita pred zmrzovanjem namesto kompleksne logike.
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: trigger
+            id:
+              - FanCycle
+        sequence:
+          - action: climate.set_hvac_mode
+            data:
+              hvac_mode: fan_only
+            target:
+              entity_id: !input climate_entity
+            alias: Preventivni FAN premor proti zmrzovanju
+          - delay:
+              minutes: !input fan_cycle_minutes
+          - choose:
+              - conditions:
+                  - condition: not
+                    conditions:
+                      - condition: time
+                        after: !input night_start
+                        before: !input night_end
+                  - condition: template
+                    value_template: "{{ delta_temp > turn_off_delta }}"
+                sequence:
+                  - action: climate.set_hvac_mode
+                    data:
+                      hvac_mode: cool
+                    target:
+                      entity_id: !input climate_entity
+                  - action: climate.set_temperature
+                    data:
+                      temperature: "{{ target_temp }}"
+                    target:
+                      entity_id: !input climate_entity
+            default:
+              - action: climate.set_hvac_mode
+                data:
+                  hvac_mode: "off"
+                target:
+                  entity_id: !input climate_entity
+        alias: "FAN CIKEL: po premoru ponovno oceni potrebo po hlajenju"
+
+      # ---------------------------------------------------------------
+      # VEJA 4: RAZVLAŽEVANJE - samostojno, neodvisno od hlajenja
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: template
+            value_template: "{{ humidity_high and climate_state != 'dry' }}"
+          - condition: not
+            conditions:
+              - condition: time
+                after: !input night_start
+                before: !input night_end
+          - condition: or
+            conditions:
+              - condition: state
+                entity_id: !input person_entity
+                state: home
+              - condition: template
+                value_template: "{{ is_near_home }}"
+        sequence:
+          - action: climate.set_hvac_mode
+            data:
+              hvac_mode: dry
+            target:
+              entity_id: !input climate_entity
+        alias: "RAZVLAŽEVANJE: vlaga nad pragom"
+
+      # ---------------------------------------------------------------
+      # VEJA 5: OKREVANJE iz DRY nazaj v COOL, ko vlaga pade in je
+      # hlajenje (spet) potrebno
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ climate_state == 'dry' and not humidity_high and
+                 delta_temp > turn_on_delta }}
+        sequence:
+          - action: climate.set_hvac_mode
+            data:
+              hvac_mode: cool
+            target:
+              entity_id: !input climate_entity
+          - action: climate.set_temperature
+            data:
+              temperature: "{{ target_temp }}"
+            target:
+              entity_id: !input climate_entity
+        alias: "OKREVANJE: iz DRY nazaj v COOL"
+
+      # ---------------------------------------------------------------
+      # VEJA 6: VKLOP
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: state
+            entity_id: !input climate_entity
+            state: "off"
+          - condition: or
+            conditions:
+              - condition: state
+                entity_id: !input person_entity
+                state: home
+              - condition: template
+                value_template: "{{ is_near_home }}"
+          - condition: not
+            conditions:
+              - condition: time
+                after: !input night_start
+                before: !input night_end
+          - condition: template
+            value_template: "{{ outside_temp > (current_temp - outside_cooler_margin) }}"
+          - condition: state
+            entity_id: !input climate_entity
+            state: "off"
+            for:
+              minutes: !input cooldown_minutes
+          - condition: or
+            alias: Vztrajno pregreto (namenski trigger ali periodično preverjanje)
+            conditions:
+              - condition: trigger
+                id:
+                  - SustainedHeat
+              - condition: and
+                conditions:
+                  - condition: trigger
+                    id:
+                      - PeriodicCheck
+                  - condition: template
+                    value_template: "{{ delta_temp > turn_on_delta }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ humidity_high }}"
+                sequence:
+                  - action: climate.set_hvac_mode
+                    data:
+                      hvac_mode: dry
+                    target:
+                      entity_id: !input climate_entity
+            default:
+              - action: climate.set_hvac_mode
+                data:
+                  hvac_mode: cool
+                target:
+                  entity_id: !input climate_entity
+              - action: climate.set_temperature
+                data:
+                  temperature: "{{ target_temp }}"
+                target:
+                  entity_id: !input climate_entity
+        alias: "VKLOP: doma/v bližini, pregreto, izven nočnega okna"
+
+      # ---------------------------------------------------------------
+      # VEJA 7: PRILAGODI temperaturo med hlajenjem - SAMO če se
+      # dejansko razlikuje od trenutno nastavljene (dedup ukazov!)
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: state
+            entity_id: !input climate_entity
+            state: cool
+          - condition: template
+            value_template: >-
+              {{ (delta_temp | abs >= 1) and
+                 (climate_set_temp | round(0) != target_temp | round(0)) }}
+        sequence:
+          - action: climate.set_temperature
+            data:
+              temperature: "{{ target_temp }}"
+            target:
+              entity_id: !input climate_entity
+        alias: "PRILAGODI: temperatura med hlajenjem (samo če se razlikuje)"
