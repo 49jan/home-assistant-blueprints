@@ -1,18 +1,18 @@
-# Dodaj v configuration.yaml (ali v template: !include ...)
+# V configuration.yaml uporabi:
+# template: !include_dir_merge_list integrations/templates/
 # Zamenjaj entity_id cone z dejanskim (Orodja za razvijalce -> Stanja).
-template:
-  - binary_sensor:
-      - name: "Ecodan gretje radiatorjev"
-        unique_id: ecodan_gretje_radiatorjev
-        device_class: heat
-        availability: "{{ states('climate.toplotna_crpalka_zone_1') not in ['unavailable', 'unknown'] }}"
-        state: >
-          {{ state_attr('climate.toplotna_crpalka_zone_1', 'hvac_action') == 'heating' }}
-        # Ecodan greje s presledki (vmes pripravlja toplo vodo), zato zakasnitev izklopa.
-        delay_off:
-          minutes: 20
+- binary_sensor:
+    - name: "Ecodan gretje radiatorjev"
+      unique_id: ecodan_gretje_radiatorjev
+      device_class: heat
+      availability: "{{ states('climate.toplotna_crpalka_zone_1') not in ['unavailable', 'unknown'] }}"
+      state: >
+        {{ state_attr('climate.toplotna_crpalka_zone_1', 'hvac_action') == 'heating' }}
+      # Ecodan greje s presledki (vmes pripravlja toplo vodo), zato zakasnitev izklopa.
+      delay_off:
+        minutes: 20
 
-        # REZERVA (ni preverjeno, ali ventil On = bojler). Uporabi samo, če hvac_action ne deluje:
-        # state: >
-        #   {{ is_state('binary_sensor.<water_pump_1>', 'on')
-        #      and is_state('binary_sensor.<3_way_valve>', 'off') }}
+      # REZERVA (ni preverjeno, ali ventil On = bojler). Uporabi samo, če hvac_action ne deluje:
+      # state: >
+      #   {{ is_state('binary_sensor.<water_pump_1>', 'on')
+      #      and is_state('binary_sensor.<3_way_valve>', 'off') }}

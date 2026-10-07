@@ -15,7 +15,8 @@ blueprint:
     - Ko se razvlaževanje konča, avtomatizacija stanje na novo izračuna (ne obnavlja posnetka).
     - Signal "radiatorji grejejo" naj bo binary_sensor (glej priloženi template z zakasnitvijo izklopa).
   domain: automation
-  min_version: 2024.10.0
+  homeassistant:
+    min_version: 2024.10.0
   source_url: https://raw.githubusercontent.com/49jan/home-assistant-blueprints/main/apartment-climate-control/smart-apartment-climate-control.yaml
   input:
     naprave:

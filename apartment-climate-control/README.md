@@ -69,9 +69,12 @@ Existing automations keep their selected inputs. Review newly added inputs after
 Before using it:
 
 1. Replace `climate.toplotna_crpalka_zone_1` with the actual Ecodan climate entity ID.
-2. Add the `template:` configuration to `configuration.yaml`, a package, or a file included under your existing `template:` integration. Do not add a second top-level `template:` key.
-3. Check the Home Assistant configuration and reload template entities or restart Home Assistant.
-4. Select the resulting binary sensor, normally `binary_sensor.ecodan_gretje_radiatorjev`, under the blueprint's radiator-heating sensors.
+2. Make sure `configuration.yaml` includes the templates directory:
+   `template: !include_dir_merge_list integrations/templates/`
+
+3. Place `ecodan-radiatorji-template.yaml` in `/config/integrations/templates/binary_sensor/`. The file is a list fragment for the `template:` include and must not contain another top-level `template:` key.
+4. Check the Home Assistant configuration and reload template entities or restart Home Assistant.
+5. Select the resulting binary sensor, normally `binary_sensor.ecodan_gretje_radiatorjev`, under the blueprint's radiator-heating sensors.
 
 The alternative pump and three-way-valve template in the file is only a fallback example and must be adapted and verified before use.
 
