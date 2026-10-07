@@ -5,7 +5,7 @@ blueprint:
 
     **Prioritete (od najvišje):**
     1. Odprto okno -> klima izklopljena (tudi ročno).
-    2. Radiatorji grejejo (toplotna črpalka) -> gretje in hlajenje klime nista dovoljena, dovoljeno je samo razvlaževanje.
+    2. Radiatorji grejejo (toplotna črpalka) -> med aktivnim urnikom gretje in hlajenje nista dovoljena, razvlaževanje pa je dovoljeno; med premorom urnika radiatorji izklopijo klimo v vseh načinih.
     3. Previsoka vlaga -> razvlaževanje do ciljne vlage, nato se klima vrne v stanje, ki ga določa termostat (izklop, gretje, hlajenje).
     4. Termostat: gretje/hlajenje s ciljno temperaturo in dopustnim odstopanjem (mrtva cona).
     5. Zaščita pred preobremenitvijo: ciljna temperatura hlajenja je omejena glede na zunanjo temperaturo (velja tudi za ročno nastavitev).
@@ -280,6 +280,10 @@ blueprint:
       input:
         min_run_minutes:
           name: Najmanjši čas delovanja (minute)
+          description: >
+            Po prehodu iz izklopljenega stanja mora klima toliko minut ostati v delovanju,
+            preden avtomatizacija običajno spremeni način ali jo izklopi. Varnostni izklop
+            zaradi odprtega okna ali gretja radiatorjev to omejitev preglasi. 0 = izklopljeno.
           default: 5
           selector:
             number:
@@ -290,6 +294,10 @@ blueprint:
               mode: box
         min_idle_minutes:
           name: Najmanjši čas mirovanja (minute)
+          description: >
+            Po izklopu klima toliko minut ostane izklopljena, preden jo avtomatizacija
+            ponovno vklopi. S tem se omeji pogosto kratko ciklanje kompresorja.
+            0 = izklopljeno.
           default: 5
           selector:
             number:
@@ -335,10 +343,41 @@ blueprint:
           selector:
             action: {}
 
+    urnik:
+      name: Urnik delovanja
+      icon: mdi:calendar-clock
+      collapsed: true
+      input:
+        schedule_entity:
+          name: Urnik, ko avtomatizacija upravlja klimo (neobvezno)
+          description: >
+            Izberi Schedule helper. Ko urnik preide na neaktiven, avtomatizacija izklopi klimo,
+            nato med premorom ročne nastavitve spoštuje samo, če je dovoljeno ročno upravljanje.
+            Izjema je razvlaževanje, če je posebej dovoljeno spodaj. Prazno = urnik ni uporabljen.
+          default: ""
+          selector:
+            entity:
+              domain: schedule
+        dehum_during_schedule_pause:
+          name: Dovoli razvlaževanje med premorom urnika
+          description: Med premorom urnika lahko avtomatizacija vključi način dry, če je vlaga previsoka.
+          default: false
+          selector:
+            boolean: {}
+
 mode: single
 max_exceeded: silent
 
+trigger_variables:
+  schedule_entity_for_trigger: !input schedule_entity
+
 triggers:
+  - trigger: template
+    id: schedule_active
+    value_template: "{{ schedule_entity_for_trigger != '' and is_state(schedule_entity_for_trigger, 'on') }}"
+  - trigger: template
+    id: schedule_inactive
+    value_template: "{{ schedule_entity_for_trigger != '' and is_state(schedule_entity_for_trigger, 'off') }}"
   - trigger: state
     entity_id: !input climate_entity
     to: null
@@ -397,6 +436,8 @@ variables:
   fan_heat: !input fan_heat
   fan_cool: !input fan_cool
   fan_dry: !input fan_dry
+  schedule_entity: !input schedule_entity
+  dehum_during_schedule_pause: !input dehum_during_schedule_pause
 
   open_delay_s: >
     {{ open_delay.hours | int(0) * 3600 + open_delay.minutes | int(0) * 60 + open_delay.seconds | int(0) }}
@@ -404,6 +445,7 @@ variables:
     {{ close_delay.hours | int(0) * 3600 + close_delay.minutes | int(0) * 60 + close_delay.seconds | int(0) }}
 
   actual_mode: "{{ states(climate_entity) }}"
+  schedule_active: "{{ schedule_entity == '' or is_state(schedule_entity, 'on') }}"
   hvac_modes: "{{ state_attr(climate_entity, 'hvac_modes') or [] }}"
   fan_modes: "{{ state_attr(climate_entity, 'fan_modes') or [] }}"
   state_age_min: "{{ (now() - states[climate_entity].last_changed).total_seconds() / 60 }}"
@@ -458,6 +500,10 @@ variables:
   want_dehum: >
     {{ enable_dehum and current_hum is not none and 'dry' in hvac_modes and not window_blocked
        and (current_hum >= hum_start or (actual_mode == 'dry' and current_hum > hum_target)) }}
+  want_dehum_during_pause: >
+    {{ dehum_during_schedule_pause and enable_dehum and current_hum is not none
+       and 'dry' in hvac_modes and not window_blocked
+       and (current_hum >= hum_start or (actual_mode == 'dry' and current_hum > hum_target)) }}
 
   thermo_mode: >
     {% if current_temp is none %}
@@ -473,15 +519,29 @@ variables:
     {% endif %}
 
   desired_mode: >
-    {% if window_blocked %}off{% elif want_dehum %}dry{% else %}{{ thermo_mode | trim }}{% endif %}
+    {% if window_blocked %}
+      off
+    {% elif not schedule_active %}
+      {% if radiators_heating %}off
+      {% elif want_dehum_during_pause %}dry
+      {% elif dehum_during_schedule_pause and actual_mode == 'dry' and current_hum is not none and current_hum <= hum_target %}off
+      {% elif allow_manual %}{{ actual_mode }}
+      {% else %}off{% endif %}
+    {% elif want_dehum %}
+      dry
+    {% else %}
+      {{ thermo_mode | trim }}
+    {% endif %}
 
   forced: >
     {{ (window_blocked and actual_mode != 'off')
-       or (radiators_heating and actual_mode not in ['off', 'dry']) }}
+       or (schedule_active and radiators_heating and actual_mode not in ['off', 'dry'])
+       or (not schedule_active and radiators_heating and actual_mode != 'off')
+       or (not schedule_active and not allow_manual and desired_mode == 'off' and actual_mode != 'off') }}
   block_reason: "{{ 'okno' if window_blocked else 'radiatorji' }}"
 
   manual_active: >
-    {{ allow_manual and not forced and actual_mode != desired_mode
+    {{ schedule_active and allow_manual and not forced and actual_mode != desired_mode
        and state_age_min < manual_hold_min | float(60)
        and states[climate_entity].context.parent_id is none }}
   change_allowed: >
@@ -495,10 +555,18 @@ conditions:
   - condition: template
     value_template: "{{ states(climate_entity) not in ['unavailable', 'unknown'] }}"
   - condition: template
-    value_template: "{{ master_switch == '' or is_state(master_switch, 'on') }}"
+    value_template: "{{ master_switch == '' or is_state(master_switch, 'on') or trigger.id == 'schedule_inactive' }}"
 
 actions:
   - choose:
+      - alias: Izklopi klimo ob koncu aktivnega urnika
+        conditions:
+          - condition: trigger
+            id: schedule_inactive
+        sequence:
+          - action: climate.turn_off
+            target:
+              entity_id: "{{ climate_entity }}"
       - alias: Sprememba načina klime
         conditions:
           - condition: template
@@ -552,6 +620,8 @@ actions:
       - alias: Uveljavi ciljno temperaturo in ventilator (ročno ni dovoljeno)
         conditions:
           - condition: template
+            value_template: "{{ schedule_active }}"
+          - condition: template
             value_template: "{{ not allow_manual and desired_mode == actual_mode and desired_mode in ['heat', 'cool', 'dry'] }}"
           - condition: template
             value_template: >
@@ -580,6 +650,8 @@ actions:
                   fan_mode: "{{ fan_for_mode }}"
       - alias: Zaščita - omejitev ciljne temperature glede na zunanjo (velja tudi za ročno nastavitev)
         conditions:
+          - condition: template
+            value_template: "{{ schedule_active }}"
           - condition: template
             value_template: >
               {{ (actual_mode == 'cool' and cool_limit is not none

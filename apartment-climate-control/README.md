@@ -12,12 +12,14 @@ Home Assistant automation for controlling one apartment climate entity from indo
 The blueprint applies these priorities, from highest to lowest:
 
 1. Turn the climate entity off while a window is open.
-2. Prevent climate heating or cooling while the radiators are heating; dehumidification remains available.
+2. While the schedule is active, prevent climate heating or cooling while the radiators are heating; dehumidification remains available. During a schedule pause, radiator heating forces the climate entity off in every mode.
 3. Dehumidify above the configured humidity threshold.
 4. Heat or cool around the configured targets and tolerances.
 5. Limit target temperatures using the outdoor temperature.
 
 It also supports delayed window handling, optional manual-control hold time, minimum compressor run and idle times, per-mode fan settings, and an optional notification action when operation is blocked.
+
+An optional Home Assistant Schedule helper can define when the automation controls the climate entity. When the schedule becomes inactive, the blueprint turns the climate entity off. During the pause, manual climate settings are left alone only when manual control is enabled; otherwise, a manual turn-on is switched off again. The window-open and radiator-heating safeguards remain active during this pause and force the climate entity off in every mode. An additional option can allow humidity-based dehumidification during the pause; it is disabled by default and is still blocked while radiators are heating. When the schedule becomes active again, normal automation resumes.
 
 ### Requirements
 
@@ -53,8 +55,11 @@ To import it manually:
 - Heating, cooling, and dehumidification targets.
 - Minimum compressor run and idle times.
 - Optional fan modes and blocked-operation notification action.
+- Optional Schedule helper and an option to allow dehumidification while its schedule is inactive.
 
 The input names and detailed descriptions in the blueprint are in Slovenian.
+
+When using a Schedule helper, select it in **Urnik delovanja**. The helper's active periods are the periods when the automation manages the climate. Outside those periods the climate is turned off at the schedule transition. Later manual changes are left untouched only if **Dovoli ročno upravljanje z daljincem** is enabled; otherwise, a manual turn-on is switched off again, except when the separate dehumidification option calls for `dry`. An open window or active radiator-heating sensor always forces the climate off during the pause. Normal automation resumes immediately when the schedule becomes active. If **Dovoli razvlaževanje med premorom urnika** is enabled, the blueprint may use `dry` while humidity is above the configured threshold, but not while radiator heating is active; it turns `dry` off again at the target humidity.
 
 ### Updating
 
