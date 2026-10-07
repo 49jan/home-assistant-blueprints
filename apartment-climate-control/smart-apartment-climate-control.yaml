@@ -1,0 +1,593 @@
+blueprint:
+  name: Smart Apartment Climate Control
+  description: |
+    Upravlja eno klimo (climate) glede na povprečje senzorjev temperature in vlage.
+
+    **Prioritete (od najvišje):**
+    1. Odprto okno -> klima izklopljena (tudi ročno).
+    2. Radiatorji grejejo (toplotna črpalka) -> gretje in hlajenje klime nista dovoljena, dovoljeno je samo razvlaževanje.
+    3. Previsoka vlaga -> razvlaževanje do ciljne vlage, nato se klima vrne v stanje, ki ga določa termostat (izklop, gretje, hlajenje).
+    4. Termostat: gretje/hlajenje s ciljno temperaturo in dopustnim odstopanjem (mrtva cona).
+    5. Zaščita pred preobremenitvijo: ciljna temperatura hlajenja je omejena glede na zunanjo temperaturo (velja tudi za ročno nastavitev).
+
+    **Opombe:**
+    - Brez senzorjev temperature/vlage se uporabita vrednosti, ki ju poroča klima.
+    - Ko se razvlaževanje konča, avtomatizacija stanje na novo izračuna (ne obnavlja posnetka).
+    - Signal "radiatorji grejejo" naj bo binary_sensor (glej priloženi template z zakasnitvijo izklopa).
+  domain: automation
+  min_version: 2024.10.0
+  source_url: https://raw.githubusercontent.com/49jan/home-assistant-blueprints/main/apartment-climate-control/smart-apartment-climate-control.yaml
+  input:
+    naprave:
+      name: Naprave
+      icon: mdi:air-conditioner
+      collapsed: false
+      input:
+        climate_entity:
+          name: Klima
+          selector:
+            entity:
+              domain: climate
+        master_switch:
+          name: Glavno stikalo (neobvezno)
+          description: Če je izbrano in izklopljeno, avtomatizacija ne dela ničesar.
+          default: ""
+          selector:
+            entity:
+              domain: input_boolean
+        temp_sensors:
+          name: Senzorji temperature (neobvezno)
+          description: Uporabi se povprečje. Če jih ni, se uporabi temperatura iz klime.
+          default: []
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+              multiple: true
+        humidity_sensors:
+          name: Senzorji vlage (neobvezno)
+          description: Uporabi se povprečje. Če jih ni, se uporabi vlaga iz klime (če jo poroča).
+          default: []
+          selector:
+            entity:
+              domain: sensor
+              device_class: humidity
+              multiple: true
+        window_sensors:
+          name: Senzorji odprtih oken (neobvezno)
+          description: Če je kateri odprt, je klima izklopljena.
+          default: []
+          selector:
+            entity:
+              domain: binary_sensor
+              multiple: true
+        heating_sensors:
+          name: Senzor gretja radiatorjev (neobvezno)
+          description: >
+            binary_sensor, ki je vklopljen, ko toplotna črpalka greje radiatorje.
+            Če je vklopljen, klima ne sme greti ali hladiti (dovoljeno je samo razvlaževanje).
+          default: []
+          selector:
+            entity:
+              domain: binary_sensor
+              multiple: true
+        outdoor_sensor:
+          name: Zunanja temperatura (neobvezno)
+          default: ""
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+
+    termostat:
+      name: Gretje in hlajenje
+      icon: mdi:thermostat
+      collapsed: false
+      input:
+        enable_heating:
+          name: Gretje dovoljeno
+          default: true
+          selector:
+            boolean: {}
+        heat_target:
+          name: Ciljna temperatura gretja
+          default: 21
+          selector:
+            number:
+              min: 10
+              max: 30
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: box
+        heat_tolerance:
+          name: Dopustno odstopanje pri gretju
+          description: Gretje se vklopi šele, ko temperatura pade pod (cilj - odstopanje). Izklopi se pri doseženi ciljni.
+          default: 0.5
+          selector:
+            number:
+              min: 0
+              max: 5
+              step: 0.1
+              unit_of_measurement: "°C"
+              mode: box
+        enable_cooling:
+          name: Hlajenje dovoljeno
+          default: true
+          selector:
+            boolean: {}
+        cool_target:
+          name: Ciljna temperatura hlajenja
+          description: Če je nižja od ciljne temperature gretja, se uporabi ciljna temperatura gretja.
+          default: 25
+          selector:
+            number:
+              min: 16
+              max: 35
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: box
+        cool_tolerance:
+          name: Dopustno odstopanje pri hlajenju
+          description: Hlajenje se vklopi šele, ko temperatura preseže (cilj + odstopanje). Izklopi se pri doseženi ciljni.
+          default: 0.5
+          selector:
+            number:
+              min: 0
+              max: 5
+              step: 0.1
+              unit_of_measurement: "°C"
+              mode: box
+        cool_max_delta:
+          name: Največja razlika pri hlajenju (zunaj - znotraj)
+          description: >
+            Zaščita pred preobremenitvijo: ciljna temperatura hlajenja ne sme biti nižja od
+            (zunanja temperatura - ta razlika). Npr. zunaj 35 °C in razlika 8 -> hlajenje ne pod 27 °C.
+            Velja tudi za ročno nastavitev z daljincem. 0 = izklopljeno. Potrebuje zunanji senzor.
+          default: 8
+          selector:
+            number:
+              min: 0
+              max: 20
+              step: 1
+              unit_of_measurement: "K"
+              mode: box
+        heat_max_delta:
+          name: Največja razlika pri gretju (znotraj - zunaj)
+          description: >
+            Ciljna temperatura gretja ne sme biti višja od (zunanja temperatura + ta razlika).
+            Pri gretju je to običajno nepotrebno, zato je privzeto izklopljeno (0). Potrebuje zunanji senzor.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 50
+              step: 1
+              unit_of_measurement: "K"
+              mode: box
+        heat_min_outdoor:
+          name: Najnižja zunanja temperatura za gretje
+          description: Pod to temperaturo klima ne greje (potrebuje zunanji senzor).
+          default: -15
+          selector:
+            number:
+              min: -30
+              max: 20
+              step: 1
+              unit_of_measurement: "°C"
+              mode: box
+        cool_block_outdoor_colder:
+          name: Ne hladi, ko je zunaj hladneje kot znotraj
+          default: false
+          selector:
+            boolean: {}
+
+    vlaga:
+      name: Razvlaževanje
+      icon: mdi:water-percent
+      collapsed: false
+      input:
+        enable_dehum:
+          name: Razvlaževanje dovoljeno
+          default: true
+          selector:
+            boolean: {}
+        hum_start:
+          name: Meja vlage za začetek razvlaževanja
+          default: 65
+          selector:
+            number:
+              min: 30
+              max: 95
+              step: 1
+              unit_of_measurement: "%"
+              mode: box
+        hum_target:
+          name: Ciljna vlaga (konec razvlaževanja)
+          description: Mora biti nižja od meje za začetek.
+          default: 55
+          selector:
+            number:
+              min: 30
+              max: 90
+              step: 1
+              unit_of_measurement: "%"
+              mode: box
+
+    okna:
+      name: Okna
+      icon: mdi:window-open-variant
+      collapsed: true
+      input:
+        window_open_delay:
+          name: Zakasnitev izklopa po odprtju okna
+          default:
+            hours: 0
+            minutes: 1
+            seconds: 0
+          selector:
+            duration: {}
+        window_close_delay:
+          name: Zakasnitev ponovnega vklopa po zaprtju okna
+          default:
+            hours: 0
+            minutes: 2
+            seconds: 0
+          selector:
+            duration: {}
+
+    radiatorji:
+      name: Radiatorji
+      icon: mdi:radiator
+      collapsed: true
+      input:
+        heating_unavailable_blocks:
+          name: Nedostopen senzor gretja šteje kot "greje"
+          description: Privzeto je izključeno (nedostopen = ne greje).
+          default: false
+          selector:
+            boolean: {}
+
+    rocno:
+      name: Ročno upravljanje
+      icon: mdi:remote
+      collapsed: true
+      input:
+        allow_manual:
+          name: Dovoli ročno upravljanje z daljincem
+          description: >
+            Če je vklopljeno, avtomatizacija po ročni spremembi načina počaka.
+            Okna in radiatorji (gretje/hlajenje) veljajo vedno. Če je izklopljeno,
+            avtomatizacija ročne spremembe razveljavi.
+          default: true
+          selector:
+            boolean: {}
+        manual_hold_minutes:
+          name: Čakanje po ročni spremembi (minute)
+          default: 60
+          selector:
+            number:
+              min: 5
+              max: 480
+              step: 5
+              unit_of_measurement: min
+              mode: box
+
+    zascita:
+      name: Zaščita kompresorja
+      icon: mdi:shield-check
+      collapsed: true
+      input:
+        min_run_minutes:
+          name: Najmanjši čas delovanja (minute)
+          default: 5
+          selector:
+            number:
+              min: 0
+              max: 60
+              step: 1
+              unit_of_measurement: min
+              mode: box
+        min_idle_minutes:
+          name: Najmanjši čas mirovanja (minute)
+          default: 5
+          selector:
+            number:
+              min: 0
+              max: 60
+              step: 1
+              unit_of_measurement: min
+              mode: box
+
+    ventilator:
+      name: Ventilator (neobvezno)
+      icon: mdi:fan
+      collapsed: true
+      input:
+        fan_heat:
+          name: Način ventilatorja pri gretju
+          description: Točno ime načina, kot ga pozna klima (npr. auto, low). Prazno = brez spremembe.
+          default: ""
+          selector:
+            text: {}
+        fan_cool:
+          name: Način ventilatorja pri hlajenju
+          default: ""
+          selector:
+            text: {}
+        fan_dry:
+          name: Način ventilatorja pri razvlaževanju
+          default: ""
+          selector:
+            text: {}
+
+    obvestila:
+      name: Obvestila
+      icon: mdi:bell
+      collapsed: true
+      input:
+        notify_action:
+          name: Dejanje ob prisilnem izklopu (neobvezno)
+          description: >
+            Zažene se, ko avtomatizacija ugasne klimo zaradi odprtega okna ali gretja radiatorjev.
+            Na voljo je spremenljivka block_reason ("okno" ali "radiatorji").
+          default: []
+          selector:
+            action: {}
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    entity_id: !input climate_entity
+    to: null
+  - trigger: state
+    entity_id: !input climate_entity
+    attribute: temperature
+  - trigger: state
+    entity_id: !input temp_sensors
+  - trigger: state
+    entity_id: !input humidity_sensors
+  - trigger: state
+    entity_id: !input heating_sensors
+  - trigger: state
+    entity_id: !input window_sensors
+  - trigger: state
+    entity_id: !input window_sensors
+    to: "on"
+    for: !input window_open_delay
+  - trigger: state
+    entity_id: !input window_sensors
+    to: "off"
+    for: !input window_close_delay
+  - trigger: time_pattern
+    minutes: "/5"
+  - trigger: homeassistant
+    event: start
+
+variables:
+  climate_entity: !input climate_entity
+  master_switch: !input master_switch
+  temp_sensors: !input temp_sensors
+  humidity_sensors: !input humidity_sensors
+  window_sensors: !input window_sensors
+  heating_sensors: !input heating_sensors
+  outdoor_sensor: !input outdoor_sensor
+  enable_heating: !input enable_heating
+  heat_target: !input heat_target
+  heat_tol: !input heat_tolerance
+  enable_cooling: !input enable_cooling
+  cool_target: !input cool_target
+  cool_tol: !input cool_tolerance
+  heat_min_outdoor: !input heat_min_outdoor
+  cool_max_delta: !input cool_max_delta
+  heat_max_delta: !input heat_max_delta
+  cool_block_outdoor: !input cool_block_outdoor_colder
+  enable_dehum: !input enable_dehum
+  hum_start: !input hum_start
+  hum_target: !input hum_target
+  open_delay: !input window_open_delay
+  close_delay: !input window_close_delay
+  unavailable_blocks: !input heating_unavailable_blocks
+  allow_manual: !input allow_manual
+  manual_hold_min: !input manual_hold_minutes
+  min_run: !input min_run_minutes
+  min_idle: !input min_idle_minutes
+  fan_heat: !input fan_heat
+  fan_cool: !input fan_cool
+  fan_dry: !input fan_dry
+
+  open_delay_s: >
+    {{ open_delay.hours | int(0) * 3600 + open_delay.minutes | int(0) * 60 + open_delay.seconds | int(0) }}
+  close_delay_s: >
+    {{ close_delay.hours | int(0) * 3600 + close_delay.minutes | int(0) * 60 + close_delay.seconds | int(0) }}
+
+  actual_mode: "{{ states(climate_entity) }}"
+  hvac_modes: "{{ state_attr(climate_entity, 'hvac_modes') or [] }}"
+  fan_modes: "{{ state_attr(climate_entity, 'fan_modes') or [] }}"
+  state_age_min: "{{ (now() - states[climate_entity].last_changed).total_seconds() / 60 }}"
+
+  current_temp: >
+    {% set v = expand(temp_sensors) | map(attribute='state') | select('is_number') | map('float') | list %}
+    {{ (v | sum / v | length) | round(2) if v | length > 0 else state_attr(climate_entity, 'current_temperature') | float(none) }}
+  current_hum: >
+    {% set v = expand(humidity_sensors) | map(attribute='state') | select('is_number') | map('float') | list %}
+    {{ (v | sum / v | length) | round(1) if v | length > 0 else state_attr(climate_entity, 'current_humidity') | float(none) }}
+  outdoor_temp: >
+    {{ states(outdoor_sensor) | float(none) if outdoor_sensor else none }}
+
+  window_open_delayed: >
+    {% set ns = namespace(r=false) %}
+    {% for w in expand(window_sensors) %}
+      {% if w.state == 'on' and (now() - w.last_changed).total_seconds() >= open_delay_s | int(0) %}
+        {% set ns.r = true %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.r }}
+  window_recently_closed: >
+    {% set ns = namespace(r=false) %}
+    {% for w in expand(window_sensors) %}
+      {% if w.state == 'off' and (now() - w.last_changed).total_seconds() < close_delay_s | int(0) %}
+        {% set ns.r = true %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.r }}
+  window_blocked: "{{ window_open_delayed or (window_recently_closed and actual_mode == 'off') }}"
+
+  radiators_heating: >
+    {% set ns = namespace(r=false) %}
+    {% for h in expand(heating_sensors) %}
+      {% if h.state == 'on' or (unavailable_blocks and h.state in ['unavailable', 'unknown']) %}
+        {% set ns.r = true %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.r }}
+
+  heat_outdoor_ok: "{{ outdoor_temp is none or outdoor_temp >= heat_min_outdoor }}"
+  cool_outdoor_ok: >
+    {{ not (cool_block_outdoor and outdoor_temp is not none and current_temp is not none and outdoor_temp < current_temp) }}
+  cool_limit: >
+    {{ (outdoor_temp - cool_max_delta | float(0)) if (outdoor_temp is not none and cool_max_delta | float(0) > 0) else none }}
+  heat_limit: >
+    {{ (outdoor_temp + heat_max_delta | float(0)) if (outdoor_temp is not none and heat_max_delta | float(0) > 0) else none }}
+  heat_target_final: "{{ [heat_target, heat_limit] | min if heat_limit is not none else heat_target }}"
+  cool_target_base: "{{ [cool_target, heat_target] | max if enable_heating else cool_target }}"
+  cool_target_eff: "{{ [cool_target_base, cool_limit] | max if cool_limit is not none else cool_target_base }}"
+
+  want_dehum: >
+    {{ enable_dehum and current_hum is not none and 'dry' in hvac_modes and not window_blocked
+       and (current_hum >= hum_start or (actual_mode == 'dry' and current_hum > hum_target)) }}
+
+  thermo_mode: >
+    {% if current_temp is none %}
+      {{ 'off' if actual_mode == 'dry' else actual_mode }}
+    {% elif enable_heating and not radiators_heating and heat_outdoor_ok and 'heat' in hvac_modes
+            and (current_temp < heat_target_final - heat_tol or (actual_mode == 'heat' and current_temp < heat_target_final)) %}
+      heat
+    {% elif enable_cooling and not radiators_heating and cool_outdoor_ok and 'cool' in hvac_modes
+            and (current_temp > cool_target_eff + cool_tol or (actual_mode == 'cool' and current_temp > cool_target_eff)) %}
+      cool
+    {% else %}
+      off
+    {% endif %}
+
+  desired_mode: >
+    {% if window_blocked %}off{% elif want_dehum %}dry{% else %}{{ thermo_mode | trim }}{% endif %}
+
+  forced: >
+    {{ (window_blocked and actual_mode != 'off')
+       or (radiators_heating and actual_mode not in ['off', 'dry']) }}
+  block_reason: "{{ 'okno' if window_blocked else 'radiatorji' }}"
+
+  manual_active: >
+    {{ allow_manual and not forced and actual_mode != desired_mode
+       and state_age_min < manual_hold_min | float(60)
+       and states[climate_entity].context.parent_id is none }}
+  change_allowed: >
+    {{ forced or state_age_min >= (min_idle if actual_mode == 'off' else min_run) | float(0) }}
+
+  setpoint: "{{ heat_target_final if desired_mode == 'heat' else cool_target_eff }}"
+  fan_for_mode: >
+    {{ fan_heat if desired_mode == 'heat' else fan_cool if desired_mode == 'cool' else fan_dry if desired_mode == 'dry' else '' }}
+
+conditions:
+  - condition: template
+    value_template: "{{ states(climate_entity) not in ['unavailable', 'unknown'] }}"
+  - condition: template
+    value_template: "{{ master_switch == '' or is_state(master_switch, 'on') }}"
+
+actions:
+  - choose:
+      - alias: Sprememba načina klime
+        conditions:
+          - condition: template
+            value_template: "{{ desired_mode != actual_mode }}"
+          - condition: template
+            value_template: "{{ not manual_active }}"
+          - condition: template
+            value_template: "{{ change_allowed }}"
+          - condition: template
+            value_template: "{{ desired_mode == 'off' or desired_mode in hvac_modes }}"
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ desired_mode == 'off' }}"
+            then:
+              - action: climate.turn_off
+                target:
+                  entity_id: "{{ climate_entity }}"
+              - if:
+                  - condition: template
+                    value_template: "{{ window_blocked or radiators_heating }}"
+                then: !input notify_action
+            else:
+              - action: climate.set_hvac_mode
+                target:
+                  entity_id: "{{ climate_entity }}"
+                data:
+                  hvac_mode: "{{ desired_mode }}"
+              - if:
+                  - condition: template
+                    value_template: "{{ desired_mode in ['heat', 'cool'] }}"
+                then:
+                  - delay:
+                      seconds: 2
+                  - action: climate.set_temperature
+                    target:
+                      entity_id: "{{ climate_entity }}"
+                    data:
+                      temperature: "{{ setpoint }}"
+              - if:
+                  - condition: template
+                    value_template: "{{ fan_for_mode != '' and fan_for_mode in fan_modes }}"
+                then:
+                  - delay:
+                      seconds: 2
+                  - action: climate.set_fan_mode
+                    target:
+                      entity_id: "{{ climate_entity }}"
+                    data:
+                      fan_mode: "{{ fan_for_mode }}"
+      - alias: Uveljavi ciljno temperaturo in ventilator (ročno ni dovoljeno)
+        conditions:
+          - condition: template
+            value_template: "{{ not allow_manual and desired_mode == actual_mode and desired_mode in ['heat', 'cool', 'dry'] }}"
+          - condition: template
+            value_template: >
+              {{ (desired_mode in ['heat', 'cool']
+                  and (state_attr(climate_entity, 'temperature') | float(0) - setpoint | float(0)) | abs >= 0.5)
+                 or (fan_for_mode != '' and fan_for_mode in fan_modes
+                     and state_attr(climate_entity, 'fan_mode') != fan_for_mode) }}
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ desired_mode in ['heat', 'cool'] }}"
+            then:
+              - action: climate.set_temperature
+                target:
+                  entity_id: "{{ climate_entity }}"
+                data:
+                  temperature: "{{ setpoint }}"
+          - if:
+              - condition: template
+                value_template: "{{ fan_for_mode != '' and fan_for_mode in fan_modes }}"
+            then:
+              - action: climate.set_fan_mode
+                target:
+                  entity_id: "{{ climate_entity }}"
+                data:
+                  fan_mode: "{{ fan_for_mode }}"
+      - alias: Zaščita - omejitev ciljne temperature glede na zunanjo (velja tudi za ročno nastavitev)
+        conditions:
+          - condition: template
+            value_template: >
+              {{ (actual_mode == 'cool' and cool_limit is not none
+                  and state_attr(climate_entity, 'temperature') | float(99) < cool_limit - 0.25)
+                 or (actual_mode == 'heat' and heat_limit is not none
+                  and state_attr(climate_entity, 'temperature') | float(0) > heat_limit + 0.25) }}
+        sequence:
+          - action: climate.set_temperature
+            target:
+              entity_id: "{{ climate_entity }}"
+            data:
+              temperature: "{{ cool_limit if actual_mode == 'cool' else heat_limit }}"
