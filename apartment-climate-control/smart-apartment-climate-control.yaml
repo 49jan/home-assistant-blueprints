@@ -1,7 +1,7 @@
 blueprint:
   name: Smart Apartment Climate Control
   description: |
-    Upravlja eno klimo (climate) glede na povprečje senzorjev temperature in vlage.
+    Upravlja eno klimo (climate) glede na temperaturo, vlago, urnik, prisotnost in zaščitne senzorje.
 
     **Prioritete (od najvišje):**
     1. Odprto okno -> klima izklopljena (tudi ročno).
@@ -11,7 +11,11 @@ blueprint:
     5. Zaščita pred preobremenitvijo: ciljna temperatura hlajenja je omejena glede na zunanjo temperaturo (velja tudi za ročno nastavitev).
 
     **Opombe:**
-    - Brez senzorjev temperature/vlage se uporabita vrednosti, ki ju poroča klima.
+    - Temperaturni senzorji se povprečijo; vlaga se lahko povpreči ali uporabi najvišja vrednost.
+    - Izbrani zunanji temperaturni/vlažnostni senzorji morajo biti stabilni nastavljeno število sekund.
+    - Prisotnost oseb lahko omeji gretje/hlajenje; razvlaževanje lahko deluje tudi ob odsotnosti.
+    - Preventivni FAN cikel je neobvezen ukrep za zmanjšanje tveganja zaledenitve notranje enote pri dolgotrajnem hlajenju v skrajnih razmerah. Ne zagotavlja zaščite pred zmrzovanjem; upoštevaj navodila proizvajalca.
+    - Če zunanjih senzorjev ni, se uporabijo vrednosti, ki ju poroča klima, kadar so na voljo.
     - Ko se razvlaževanje konča, avtomatizacija stanje na novo izračuna (ne obnavlja posnetka).
     - Signal "radiatorji grejejo" naj bo binary_sensor (glej priloženi template z zakasnitvijo izklopa).
   domain: automation
@@ -29,6 +33,30 @@ blueprint:
           selector:
             entity:
               domain: climate
+        person_entities:
+          name: Osebe za prisotnost (neobvezno)
+          description: >
+            Izberi osebe, ki naj štejejo za prisotne. Samodejno gretje ali hlajenje je dovoljeno,
+            če je vsaj ena izbrana oseba doma ali znotraj nastavljenega radija; če so vse odsotne,
+            se gretje in hlajenje izklopita. Razvlaževanje lahko deluje tudi ob odsotnosti.
+            Prazen seznam izklopi preverjanje prisotnosti. Med premorom urnika prisotnost ne
+            posega v ročne nastavitve; varovali oken in radiatorjev ostaneta aktivni.
+          default: []
+          selector:
+            entity:
+              domain: person
+              multiple: true
+        presence_distance_km:
+          name: Radij prisotnosti od doma
+          description: Oseba šteje kot prisotna, če je doma ali znotraj tega radija.
+          default: 10
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 0.5
+              unit_of_measurement: km
+              mode: box
         master_switch:
           name: Glavno stikalo (neobvezno)
           description: Če je izbrano in izklopljeno, avtomatizacija ne dela ničesar.
@@ -47,13 +75,23 @@ blueprint:
               multiple: true
         humidity_sensors:
           name: Senzorji vlage (neobvezno)
-          description: Uporabi se povprečje. Če jih ni, se uporabi vlaga iz klime (če jo poroča).
+          description: Izberi, ali se uporabi povprečje ali najvišja vrednost. Brez senzorjev se uporabi vlaga iz klime.
           default: []
           selector:
             entity:
               domain: sensor
               device_class: humidity
               multiple: true
+        humidity_aggregation:
+          name: Združevanje vrednosti senzorjev vlage
+          default: average
+          selector:
+            select:
+              options:
+                - label: Povprečje
+                  value: average
+                - label: Najvišja vrednost
+                  value: maximum
         window_sensors:
           name: Senzorji odprtih oken (neobvezno)
           description: Če je kateri odprt, je klima izklopljena.
@@ -138,6 +176,20 @@ blueprint:
               step: 0.1
               unit_of_measurement: "°C"
               mode: box
+        cooling_persistence_minutes:
+          name: Vztrajnost pred samodejnim hlajenjem (minute)
+          description: >
+            Samodejno hlajenje se vklopi šele, ko temperatura neprekinjeno ostane nad ciljem
+            hlajenja in dopustnim odstopanjem toliko minut. Če pade pod prag, se čakanje začne
+            znova. Ne zadrži razvlaževanja ali varnostnih izklopov. 0 = brez čakanja.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 60
+              step: 1
+              unit_of_measurement: min
+              mode: box
         cool_max_delta:
           name: Največja razlika pri hlajenju (zunaj - znotraj)
           description: >
@@ -181,6 +233,17 @@ blueprint:
           default: false
           selector:
             boolean: {}
+        sensor_stability_seconds:
+          name: Stabilizacija temperaturnih in vlažnostnih senzorjev (sekunde)
+          description: Meritve morajo biti toliko časa nespremenjene, preden vplivajo na odločitve. 0 = brez zamika.
+          default: 30
+          selector:
+            number:
+              min: 0
+              max: 300
+              step: 5
+              unit_of_measurement: s
+              mode: box
 
     vlaga:
       name: Razvlaževanje
@@ -307,6 +370,50 @@ blueprint:
               unit_of_measurement: min
               mode: box
 
+    zascita_zmrzovanje:
+      name: Preventivni FAN cikel
+      icon: mdi:snowflake-thermometer
+      collapsed: true
+      input:
+        fan_cycle_enabled:
+          name: Omogoči preventivni FAN cikel
+          description: >
+            Ob dolgotrajnem hlajenju v skrajnih razmerah lahko kratek FAN premor pomaga zmanjšati
+            tveganje zaledenitve notranje enote. To je le preventivni ukrep, ne zagotovljena zaščita
+            pred zmrzovanjem; upoštevaj navodila proizvajalca. Cikel deluje samo pri samodejnem hlajenju.
+          default: false
+          selector:
+            boolean: {}
+        fan_cycle_interval_minutes:
+          name: Neprekinjeno hlajenje pred FAN premorom (minute)
+          description: >
+            Po toliko minutah neprekinjenega samodejnega hlajenja se izvede FAN premor. Namenjen
+            je zmanjšanju tveganja zaledenitve notranje enote pri dolgotrajnem hlajenju v skrajnih
+            razmerah; ni zagotovljena zaščita pred zmrzovanjem. Uporabi se samo, če je FAN cikel
+            omogočen in klima podpira način fan_only.
+          default: 120
+          selector:
+            number:
+              min: 30
+              max: 360
+              step: 30
+              unit_of_measurement: min
+              mode: box
+        fan_cycle_duration_minutes:
+          name: Trajanje FAN premora (minute)
+          description: >
+            Koliko časa naj klima po dolgotrajnem hlajenju deluje samo z ventilatorjem. Po premoru
+            avtomatizacija znova preveri urnik, prisotnost, okna, radiatorje in temperaturo; na
+            hlajenje se vrne samo, če je to še potrebno in dovoljeno. Če ne, klimo izklopi.
+          default: 10
+          selector:
+            number:
+              min: 2
+              max: 30
+              step: 1
+              unit_of_measurement: min
+              mode: box
+
     ventilator:
       name: Ventilator (neobvezno)
       icon: mdi:fan
@@ -370,6 +477,34 @@ max_exceeded: silent
 
 trigger_variables:
   schedule_entity_for_trigger: !input schedule_entity
+  sensor_stability_for_trigger: !input sensor_stability_seconds
+  climate_entity_for_trigger: !input climate_entity
+  temperature_sensors_for_trigger: !input temp_sensors
+  humidity_sensors_for_trigger: !input humidity_sensors
+  humidity_aggregation_for_trigger: !input humidity_aggregation
+  dehumidification_enabled_for_trigger: !input enable_dehum
+  humidity_start_for_trigger: !input hum_start
+  humidity_target_for_trigger: !input hum_target
+  cooling_persistence_for_trigger: !input cooling_persistence_minutes
+  cool_target_for_trigger: !input cool_target
+  cool_tolerance_for_trigger: !input cool_tolerance
+  heating_enabled_for_trigger: !input enable_heating
+  heat_target_for_trigger: !input heat_target
+  cool_max_delta_for_trigger: !input cool_max_delta
+  outside_sensor_for_trigger: !input outdoor_sensor
+  cool_block_outdoor_for_trigger: !input cool_block_outdoor_colder
+  cooling_enabled_for_trigger: !input enable_cooling
+  person_entities_for_trigger: !input person_entities
+  presence_distance_for_trigger: !input presence_distance_km
+  radiator_sensors_for_trigger: !input heating_sensors
+  radiator_unavailable_blocks_for_trigger: !input heating_unavailable_blocks
+  window_sensors_for_trigger: !input window_sensors
+  window_open_delay_for_trigger: !input window_open_delay
+  window_close_delay_for_trigger: !input window_close_delay
+  min_idle_for_trigger: !input min_idle_minutes
+  master_switch_for_trigger: !input master_switch
+  manual_control_for_trigger: !input allow_manual
+  manual_hold_for_trigger: !input manual_hold_minutes
 
 triggers:
   - trigger: template
@@ -378,6 +513,79 @@ triggers:
   - trigger: template
     id: schedule_inactive
     value_template: "{{ schedule_entity_for_trigger != '' and is_state(schedule_entity_for_trigger, 'off') }}"
+  - trigger: template
+    id: cooling_persistence_elapsed
+    value_template: >-
+      {% set ns = namespace(temperatures=[]) %}
+      {% for sensor in temperature_sensors_for_trigger %}
+        {% if is_number(states(sensor)) and (sensor_stability_for_trigger | int(0) == 0 or (now() - states[sensor].last_changed).total_seconds() >= sensor_stability_for_trigger | float(0)) %}
+          {% set ns.temperatures = ns.temperatures + [states(sensor) | float] %}
+        {% endif %}
+      {% endfor %}
+      {% if temperature_sensors_for_trigger | length == 0 %}
+        {% set current_temperature = state_attr(climate_entity_for_trigger, 'current_temperature') | float(none) %}
+      {% elif ns.temperatures | length > 0 %}
+        {% set current_temperature = ns.temperatures | sum / ns.temperatures | length %}
+      {% else %}
+        {% set current_temperature = none %}
+      {% endif %}
+      {% set humidity_values = namespace(items=[]) %}
+      {% for sensor in humidity_sensors_for_trigger %}
+        {% if is_number(states(sensor)) and (sensor_stability_for_trigger | int(0) == 0 or (now() - states[sensor].last_changed).total_seconds() >= sensor_stability_for_trigger | float(0)) %}
+          {% set humidity_values.items = humidity_values.items + [states(sensor) | float] %}
+        {% endif %}
+      {% endfor %}
+      {% if humidity_sensors_for_trigger | length == 0 %}
+        {% set current_humidity = state_attr(climate_entity_for_trigger, 'current_humidity') | float(none) %}
+      {% elif humidity_values.items | length == 0 %}
+        {% set current_humidity = none %}
+      {% elif humidity_aggregation_for_trigger == 'maximum' %}
+        {% set current_humidity = humidity_values.items | max %}
+      {% else %}
+        {% set current_humidity = humidity_values.items | sum / humidity_values.items | length %}
+      {% endif %}
+      {% set humidity_reading_pending = humidity_sensors_for_trigger | length > 0 and humidity_values.items | length == 0 %}
+      {% set humidity_allows_cooling = not dehumidification_enabled_for_trigger or (not humidity_reading_pending and (current_humidity is none or (current_humidity < humidity_start_for_trigger | float(0) and (states(climate_entity_for_trigger) != 'dry' or current_humidity <= humidity_target_for_trigger | float(0))))) %}
+      {% set outdoor_temperature = states(outside_sensor_for_trigger) | float(none) if outside_sensor_for_trigger else none %}
+      {% set target_base = [cool_target_for_trigger, heat_target_for_trigger] | max if heating_enabled_for_trigger else cool_target_for_trigger %}
+      {% set target_limit = (outdoor_temperature - cool_max_delta_for_trigger | float(0)) if outdoor_temperature is not none and cool_max_delta_for_trigger | float(0) > 0 else none %}
+      {% set target = [target_base, target_limit] | max if target_limit is not none else target_base %}
+      {% set ns = namespace(present=person_entities_for_trigger | length == 0, blocked=false) %}
+      {% for person_entity in person_entities_for_trigger %}
+        {% if is_state(person_entity, 'home') %}
+          {% set ns.present = true %}
+        {% else %}
+          {% set person_distance = distance(person_entity) %}
+          {% if person_distance is not none and person_distance | float <= presence_distance_for_trigger | float %}
+            {% set ns.present = true %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+      {% for radiator in radiator_sensors_for_trigger %}
+        {% if is_state(radiator, 'on') or (radiator_unavailable_blocks_for_trigger and states(radiator) in ['unknown', 'unavailable']) %}
+          {% set ns.blocked = true %}
+        {% endif %}
+      {% endfor %}
+      {% for window in window_sensors_for_trigger %}
+        {% if is_state(window, 'on') and (now() - states[window].last_changed).total_seconds() >= (window_open_delay_for_trigger.hours | int(0) * 3600 + window_open_delay_for_trigger.minutes | int(0) * 60 + window_open_delay_for_trigger.seconds | int(0)) %}
+          {% set ns.blocked = true %}
+        {% endif %}
+        {% if is_state(window, 'off') and is_state(climate_entity_for_trigger, 'off') and (now() - states[window].last_changed).total_seconds() < (window_close_delay_for_trigger.hours | int(0) * 3600 + window_close_delay_for_trigger.minutes | int(0) * 60 + window_close_delay_for_trigger.seconds | int(0)) %}
+          {% set ns.blocked = true %}
+        {% endif %}
+      {% endfor %}
+      {% set outside_allows_cooling = not (cool_block_outdoor_for_trigger and outdoor_temperature is not none and current_temperature is not none and outdoor_temperature < current_temperature) %}
+      {% set compressor_idle_ok = not is_state(climate_entity_for_trigger, 'off') or (now() - states[climate_entity_for_trigger].last_changed).total_seconds() >= min_idle_for_trigger | float(0) * 60 %}
+      {% set manual_hold_active = manual_control_for_trigger and states[climate_entity_for_trigger].context.parent_id is none and (now() - states[climate_entity_for_trigger].last_changed).total_seconds() < manual_hold_for_trigger | float(0) * 60 %}
+      {{ cooling_persistence_for_trigger | int(0) > 0
+        and (schedule_entity_for_trigger == '' or is_state(schedule_entity_for_trigger, 'on'))
+        and (master_switch_for_trigger == '' or is_state(master_switch_for_trigger, 'on'))
+         and cooling_enabled_for_trigger and 'cool' in (state_attr(climate_entity_for_trigger, 'hvac_modes') or [])
+         and ns.present and not ns.blocked and outside_allows_cooling and compressor_idle_ok
+        and humidity_allows_cooling and not manual_hold_active
+         and current_temperature is not none and current_temperature > target + cool_tolerance_for_trigger | float(0) }}
+    for:
+      minutes: "{{ [cooling_persistence_for_trigger | int(0), 1] | max }}"
   - trigger: state
     entity_id: !input climate_entity
     to: null
@@ -385,9 +593,21 @@ triggers:
     entity_id: !input climate_entity
     attribute: temperature
   - trigger: state
+    id: preventive_fan_cycle
+    entity_id: !input climate_entity
+    to: cool
+    for:
+      minutes: !input fan_cycle_interval_minutes
+  - trigger: state
+    entity_id: !input person_entities
+  - trigger: state
     entity_id: !input temp_sensors
+    for:
+      seconds: "{{ [sensor_stability_for_trigger | int(0), 1] | max }}"
   - trigger: state
     entity_id: !input humidity_sensors
+    for:
+      seconds: "{{ [sensor_stability_for_trigger | int(0), 1] | max }}"
   - trigger: state
     entity_id: !input heating_sensors
   - trigger: state
@@ -407,9 +627,12 @@ triggers:
 
 variables:
   climate_entity: !input climate_entity
+  person_entities: !input person_entities
+  presence_distance_km: !input presence_distance_km
   master_switch: !input master_switch
   temp_sensors: !input temp_sensors
   humidity_sensors: !input humidity_sensors
+  humidity_aggregation: !input humidity_aggregation
   window_sensors: !input window_sensors
   heating_sensors: !input heating_sensors
   outdoor_sensor: !input outdoor_sensor
@@ -419,10 +642,12 @@ variables:
   enable_cooling: !input enable_cooling
   cool_target: !input cool_target
   cool_tol: !input cool_tolerance
+  cooling_persistence_minutes: !input cooling_persistence_minutes
   heat_min_outdoor: !input heat_min_outdoor
   cool_max_delta: !input cool_max_delta
   heat_max_delta: !input heat_max_delta
   cool_block_outdoor: !input cool_block_outdoor_colder
+  sensor_stability_seconds: !input sensor_stability_seconds
   enable_dehum: !input enable_dehum
   hum_start: !input hum_start
   hum_target: !input hum_target
@@ -436,6 +661,9 @@ variables:
   fan_heat: !input fan_heat
   fan_cool: !input fan_cool
   fan_dry: !input fan_dry
+  fan_cycle_enabled: !input fan_cycle_enabled
+  fan_cycle_interval_minutes: !input fan_cycle_interval_minutes
+  fan_cycle_duration_minutes: !input fan_cycle_duration_minutes
   schedule_entity: !input schedule_entity
   dehum_during_schedule_pause: !input dehum_during_schedule_pause
 
@@ -451,11 +679,39 @@ variables:
   state_age_min: "{{ (now() - states[climate_entity].last_changed).total_seconds() / 60 }}"
 
   current_temp: >
-    {% set v = expand(temp_sensors) | map(attribute='state') | select('is_number') | map('float') | list %}
-    {{ (v | sum / v | length) | round(2) if v | length > 0 else state_attr(climate_entity, 'current_temperature') | float(none) }}
+    {% set ns = namespace(values=[]) %}
+    {% for sensor in expand(temp_sensors) %}
+      {% if is_number(sensor.state) and (sensor_stability_seconds | int(0) == 0 or (now() - sensor.last_changed).total_seconds() >= sensor_stability_seconds | float(0)) %}
+        {% set ns.values = ns.values + [sensor.state | float] %}
+      {% endif %}
+    {% endfor %}
+    {% set v = ns.values %}
+    {% if temp_sensors | length == 0 %}
+      {{ state_attr(climate_entity, 'current_temperature') | float(none) }}
+    {% elif v | length > 0 %}
+      {{ (v | sum / v | length) | round(2) }}
+    {% else %}
+      {{ none }}
+    {% endif %}
   current_hum: >
-    {% set v = expand(humidity_sensors) | map(attribute='state') | select('is_number') | map('float') | list %}
-    {{ (v | sum / v | length) | round(1) if v | length > 0 else state_attr(climate_entity, 'current_humidity') | float(none) }}
+    {% set ns = namespace(values=[]) %}
+    {% for sensor in expand(humidity_sensors) %}
+      {% if is_number(sensor.state) and (sensor_stability_seconds | int(0) == 0 or (now() - sensor.last_changed).total_seconds() >= sensor_stability_seconds | float(0)) %}
+        {% set ns.values = ns.values + [sensor.state | float] %}
+      {% endif %}
+    {% endfor %}
+    {% set v = ns.values %}
+    {% if v | length == 0 %}
+      {% if humidity_sensors | length == 0 %}
+        {{ state_attr(climate_entity, 'current_humidity') | float(none) }}
+      {% else %}
+        {{ none }}
+      {% endif %}
+    {% elif humidity_aggregation == 'maximum' %}
+      {{ v | max | round(1) }}
+    {% else %}
+      {{ (v | sum / v | length) | round(1) }}
+    {% endif %}
   outdoor_temp: >
     {{ states(outdoor_sensor) | float(none) if outdoor_sensor else none }}
 
@@ -486,6 +742,24 @@ variables:
     {% endfor %}
     {{ ns.r }}
 
+  is_present: >
+    {% if person_entities | length == 0 %}
+      true
+    {% else %}
+      {% set ns = namespace(present=false) %}
+      {% for person_entity in person_entities %}
+        {% if is_state(person_entity, 'home') %}
+          {% set ns.present = true %}
+        {% else %}
+          {% set person_distance = distance(person_entity) %}
+          {% if person_distance is not none and person_distance | float <= presence_distance_km | float %}
+            {% set ns.present = true %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+      {{ ns.present }}
+    {% endif %}
+
   heat_outdoor_ok: "{{ outdoor_temp is none or outdoor_temp >= heat_min_outdoor }}"
   cool_outdoor_ok: >
     {{ not (cool_block_outdoor and outdoor_temp is not none and current_temp is not none and outdoor_temp < current_temp) }}
@@ -498,12 +772,13 @@ variables:
   cool_target_eff: "{{ [cool_target_base, cool_limit] | max if cool_limit is not none else cool_target_base }}"
 
   want_dehum: >
-    {{ enable_dehum and current_hum is not none and 'dry' in hvac_modes and not window_blocked
-       and (current_hum >= hum_start or (actual_mode == 'dry' and current_hum > hum_target)) }}
+     {{ enable_dehum and 'dry' in hvac_modes and not window_blocked
+       and ((current_hum is none and humidity_sensors | length > 0 and actual_mode == 'dry')
+          or (current_hum is not none and (current_hum >= hum_start or (actual_mode == 'dry' and current_hum > hum_target)))) }}
   want_dehum_during_pause: >
-    {{ dehum_during_schedule_pause and enable_dehum and current_hum is not none
-       and 'dry' in hvac_modes and not window_blocked
-       and (current_hum >= hum_start or (actual_mode == 'dry' and current_hum > hum_target)) }}
+     {{ dehum_during_schedule_pause and enable_dehum and 'dry' in hvac_modes and not window_blocked
+       and ((current_hum is none and humidity_sensors | length > 0 and actual_mode == 'dry')
+          or (current_hum is not none and (current_hum >= hum_start or (actual_mode == 'dry' and current_hum > hum_target)))) }}
 
   thermo_mode: >
     {% if current_temp is none %}
@@ -529,6 +804,8 @@ variables:
       {% else %}off{% endif %}
     {% elif want_dehum %}
       dry
+    {% elif not is_present %}
+      off
     {% else %}
       {{ thermo_mode | trim }}
     {% endif %}
@@ -537,6 +814,7 @@ variables:
     {{ (window_blocked and actual_mode != 'off')
        or (schedule_active and radiators_heating and actual_mode not in ['off', 'dry'])
        or (not schedule_active and radiators_heating and actual_mode != 'off')
+      or (schedule_active and not is_present and actual_mode in ['heat', 'cool'])
        or (not schedule_active and not allow_manual and desired_mode == 'off' and actual_mode != 'off') }}
   block_reason: "{{ 'okno' if window_blocked else 'radiatorji' }}"
 
@@ -559,6 +837,130 @@ conditions:
 
 actions:
   - choose:
+      - alias: Preventivni FAN premor med dolgotrajnim samodejnim hlajenjem
+        conditions:
+          - condition: trigger
+            id: preventive_fan_cycle
+          - condition: template
+            value_template: >-
+              {{ fan_cycle_enabled and schedule_active and actual_mode == 'cool'
+                 and 'fan_only' in hvac_modes and not manual_active
+                  and (not allow_manual or states[climate_entity].context.parent_id is not none)
+                 and not window_blocked and not radiators_heating and is_present }}
+        sequence:
+          - action: climate.set_hvac_mode
+            target:
+              entity_id: "{{ climate_entity }}"
+            data:
+              hvac_mode: fan_only
+          - wait_template: >-
+                {% set ns = namespace(present=person_entities | length == 0, blocked=false) %}
+                {% for person_entity in person_entities %}
+                  {% if is_state(person_entity, 'home') %}
+                    {% set ns.present = true %}
+                  {% else %}
+                    {% set person_distance = distance(person_entity) %}
+                    {% if person_distance is not none and person_distance | float <= presence_distance_km | float %}
+                      {% set ns.present = true %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                {% for radiator in expand(heating_sensors) %}
+                  {% if radiator.state == 'on' or (unavailable_blocks and radiator.state in ['unknown', 'unavailable']) %}
+                    {% set ns.blocked = true %}
+                  {% endif %}
+                {% endfor %}
+                {% for window in expand(window_sensors) %}
+                  {% if window.state == 'on' and (now() - window.last_changed).total_seconds() >= open_delay_s | int(0) %}
+                    {% set ns.blocked = true %}
+                  {% endif %}
+                  {% if window.state == 'off' and (now() - window.last_changed).total_seconds() < close_delay_s | int(0) %}
+                    {% set ns.blocked = true %}
+                  {% endif %}
+                {% endfor %}
+                {{ (schedule_entity != '' and not is_state(schedule_entity, 'on'))
+                   or (master_switch != '' and not is_state(master_switch, 'on'))
+                   or states(climate_entity) != 'fan_only' or ns.blocked or not ns.present }}
+            timeout:
+              minutes: "{{ fan_cycle_duration_minutes }}"
+            continue_on_timeout: true
+          - choose:
+              - alias: Nadaljuj hlajenje, če je še potrebno in dovoljeno
+                conditions:
+                  - condition: template
+                    value_template: >-
+                      {% set ns = namespace(temperatures=[]) %}
+                      {% for sensor in expand(temp_sensors) %}
+                        {% if is_number(sensor.state) and (sensor_stability_seconds | int(0) == 0 or (now() - sensor.last_changed).total_seconds() >= sensor_stability_seconds | float(0)) %}
+                          {% set ns.temperatures = ns.temperatures + [sensor.state | float] %}
+                        {% endif %}
+                      {% endfor %}
+                      {% if temp_sensors | length == 0 %}
+                        {% set indoor = state_attr(climate_entity, 'current_temperature') | float(none) %}
+                      {% elif ns.temperatures | length > 0 %}
+                        {% set indoor = ns.temperatures | sum / ns.temperatures | length %}
+                      {% else %}
+                        {% set indoor = none %}
+                      {% endif %}
+                      {% set outside = states(outdoor_sensor) | float(none) if outdoor_sensor else none %}
+                      {% set base = [cool_target, heat_target] | max if enable_heating else cool_target %}
+                      {% set limit = (outside - cool_max_delta | float(0)) if outside is not none and cool_max_delta | float(0) > 0 else none %}
+                      {% set target = [base, limit] | max if limit is not none else base %}
+                      {% set ns = namespace(present=person_entities | length == 0, blocked=false) %}
+                      {% for person_entity in person_entities %}
+                        {% if is_state(person_entity, 'home') %}
+                          {% set ns.present = true %}
+                        {% else %}
+                          {% set person_distance = distance(person_entity) %}
+                          {% if person_distance is not none and person_distance | float <= presence_distance_km | float %}
+                            {% set ns.present = true %}
+                          {% endif %}
+                        {% endif %}
+                      {% endfor %}
+                      {% for radiator in expand(heating_sensors) %}
+                        {% if radiator.state == 'on' or (unavailable_blocks and radiator.state in ['unknown', 'unavailable']) %}
+                          {% set ns.blocked = true %}
+                        {% endif %}
+                      {% endfor %}
+                      {% for window in expand(window_sensors) %}
+                        {% if window.state == 'on' and (now() - window.last_changed).total_seconds() >= open_delay_s | int(0) %}
+                          {% set ns.blocked = true %}
+                        {% endif %}
+                        {% if window.state == 'off' and (now() - window.last_changed).total_seconds() < close_delay_s | int(0) %}
+                          {% set ns.blocked = true %}
+                        {% endif %}
+                      {% endfor %}
+                      {% set outside_allows = not (cool_block_outdoor and outside is not none and indoor is not none and outside < indoor) %}
+                       {{ is_state(climate_entity, 'fan_only') and (schedule_entity == '' or is_state(schedule_entity, 'on'))
+                         and (master_switch == '' or is_state(master_switch, 'on'))
+                         and (not allow_manual or states[climate_entity].context.parent_id is not none)
+                         and not ns.blocked and ns.present and indoor is not none and outside_allows
+                         and enable_cooling and 'cool' in (state_attr(climate_entity, 'hvac_modes') or [])
+                         and indoor > target and desired_mode == 'cool' }}
+                sequence:
+                  - action: climate.set_hvac_mode
+                    target:
+                      entity_id: "{{ climate_entity }}"
+                    data:
+                      hvac_mode: cool
+                  - action: climate.set_temperature
+                    target:
+                      entity_id: "{{ climate_entity }}"
+                    data:
+                      temperature: >-
+                        {% set outside = states(outdoor_sensor) | float(none) if outdoor_sensor else none %}
+                        {% set base = [cool_target, heat_target] | max if enable_heating else cool_target %}
+                        {% set limit = (outside - cool_max_delta | float(0)) if outside is not none and cool_max_delta | float(0) > 0 else none %}
+                        {{ [base, limit] | max if limit is not none else base }}
+            default:
+              - if:
+                  - condition: state
+                    entity_id: !input climate_entity
+                    state: fan_only
+                then:
+                  - action: climate.turn_off
+                    target:
+                      entity_id: "{{ climate_entity }}"
       - alias: Izklopi klimo ob koncu aktivnega urnika
         conditions:
           - condition: trigger
@@ -577,6 +979,11 @@ actions:
             value_template: "{{ change_allowed }}"
           - condition: template
             value_template: "{{ desired_mode == 'off' or desired_mode in hvac_modes }}"
+          - condition: template
+            value_template: >-
+              {{ desired_mode != 'cool' or actual_mode == 'cool'
+                 or cooling_persistence_minutes | int(0) == 0
+                 or trigger.id == 'cooling_persistence_elapsed' }}
         sequence:
           - if:
               - condition: template

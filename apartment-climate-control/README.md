@@ -1,6 +1,6 @@
 # Apartment Climate Control
 
-Home Assistant automation for controlling one apartment climate entity from indoor temperature, humidity, window, radiator-heating, and outdoor-temperature sensors.
+Home Assistant automation for controlling one apartment climate entity from indoor temperature, humidity, presence, schedule, window, radiator-heating, and outdoor-temperature inputs.
 
 ## Files
 
@@ -13,11 +13,14 @@ The blueprint applies these priorities, from highest to lowest:
 
 1. Turn the climate entity off while a window is open.
 2. While the schedule is active, prevent climate heating or cooling while the radiators are heating; dehumidification remains available. During a schedule pause, radiator heating forces the climate entity off in every mode.
-3. Dehumidify above the configured humidity threshold.
-4. Heat or cool around the configured targets and tolerances.
-5. Limit target temperatures using the outdoor temperature.
+3. During the active schedule, absence of all selected people prevents heating/cooling; dehumidification remains available.
+4. Dehumidify above the configured humidity threshold.
+5. Heat or cool around the configured targets and tolerances.
+6. Limit target temperatures using the outdoor temperature.
 
-It also supports delayed window handling, optional manual-control hold time, minimum compressor run and idle times, per-mode fan settings, and an optional notification action when operation is blocked.
+It also supports delayed window handling, optional presence checks, minimum stable sensor time, cooling start persistence, humidity aggregation selection, optional manual-control hold time, minimum compressor run and idle times, per-mode fan settings, and an optional notification action when operation is blocked.
+
+The optional preventive FAN cycle is separate from minimum compressor run/idle protection. During prolonged automatic cooling, it briefly switches to fan-only to help reduce the risk of indoor-unit icing in extreme conditions. This is a preventive measure, not guaranteed freeze protection; follow the equipment manufacturer's guidance. The cycle is disabled by default and is skipped if the climate entity does not support `fan_only`.
 
 An optional Home Assistant Schedule helper can define when the automation controls the climate entity. When the schedule becomes inactive, the blueprint turns the climate entity off. During the pause, manual climate settings are left alone only when manual control is enabled; otherwise, a manual turn-on is switched off again. The window-open and radiator-heating safeguards remain active during this pause and force the climate entity off in every mode. An additional option can allow humidity-based dehumidification during the pause; it is disabled by default and is still blocked while radiators are heating. When the schedule becomes active again, normal automation resumes.
 
@@ -48,16 +51,25 @@ To import it manually:
 ### Main Inputs
 
 - Climate entity and optional master switch.
-- Indoor temperature and humidity sensors. Multiple selected sensors are averaged.
+- Indoor temperature sensors are averaged. Humidity sensors use the selected aggregation method (average by default, or maximum).
+- Optional person entities and distance radius for gating heating/cooling. Dehumidification can remain active when nobody is present.
+- Sensor stability delay (0-300 seconds) and optional sustained-temperature delay before cooling starts.
 - Window sensors with configurable open and close delays.
 - Radiator-heating binary sensors.
 - Outdoor temperature sensor and heating/cooling limits.
 - Heating, cooling, and dehumidification targets.
 - Minimum compressor run and idle times.
+- Optional preventive FAN cycle with configurable cooling interval and fan-only duration.
 - Optional fan modes and blocked-operation notification action.
 - Optional Schedule helper and an option to allow dehumidification while its schedule is inactive.
 
-The input names and detailed descriptions in the blueprint are in Slovenian.
+The input names and detailed descriptions in the blueprint are in Slovenian. By default, no people are selected, sensor stabilization is 30 seconds, cooling persistence is disabled, and the preventive FAN cycle is disabled. If sensor entities are selected but their readings have not yet remained stable long enough, those readings are temporarily ignored; the climate entity's reported value is only used when no corresponding external sensors are selected.
+
+When person entities are selected, at least one person must be home or within the configured radius for automatic heating or cooling. If everyone is away, heating/cooling is turned off even when manual control is enabled; dehumidification remains allowed. An empty person list disables presence gating. Presence does not override manual settings during a schedule pause.
+
+Humidity sensors are averaged by default; select **Najvišja vrednost** to start dehumidification based on the most humid selected room. Temperature sensors remain averaged. Selected temperature and humidity readings must remain unchanged for the configured stability duration before they affect decisions. Cooling persistence requires the cooling-start threshold to remain exceeded continuously; setting it to `0` keeps immediate starts.
+
+The preventive FAN cycle is configured under **Preventivni FAN cikel**. It is disabled by default; if enabled, the default is a FAN pause after 120 minutes of uninterrupted automatic cooling, lasting 10 minutes. The interval can be set from 30 to 360 minutes and the pause from 2 to 30 minutes. It only applies to automatic cooling, and all schedule, presence, window, radiator, and temperature conditions are checked again before cooling resumes.
 
 When using a Schedule helper, select it in **Urnik delovanja**. The helper's active periods are the periods when the automation manages the climate. Outside those periods the climate is turned off at the schedule transition. Later manual changes are left untouched only if **Dovoli ročno upravljanje z daljincem** is enabled; otherwise, a manual turn-on is switched off again, except when the separate dehumidification option calls for `dry`. An open window or active radiator-heating sensor always forces the climate off during the pause. Normal automation resumes immediately when the schedule becomes active. If **Dovoli razvlaževanje med premorom urnika** is enabled, the blueprint may use `dry` while humidity is above the configured threshold, but not while radiator heating is active; it turns `dry` off again at the target humidity.
 
