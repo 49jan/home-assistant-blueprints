@@ -499,6 +499,94 @@ class BlueprintTests(unittest.TestCase):
         )
         self.assertFalse(harness.render_cooling_persistence_trigger())
 
+    def test_manual_off_does_not_hold_heating_when_room_is_cold(self) -> None:
+        # Regression test: a manual turn-OFF must not block the automation from
+        # turning heating back on within manual_hold_minutes, unlike a manual
+        # turn-ON/mode-change, which should still be respected for that long.
+        entities = base_entities("off")
+        entities["climate.test"] = make_entity(
+            "off",
+            age_seconds=30 * 60,
+            parent_id=None,
+            attributes={**entities["climate.test"].attributes, "current_temperature": 20.0},
+        )
+        harness = self.harness(
+            {
+                "heat_target": 21,
+                "heat_tolerance": 0.9,
+                "allow_manual": True,
+                "manual_hold_minutes": 60,
+            },
+            entities,
+        )
+        variables = harness.render_variables()
+        self.assertFalse(variables["manual_active"])
+        self.assertEqual(variables["desired_mode"].strip(), "heat")
+
+    def test_manual_heat_still_holds_for_manual_hold_minutes(self) -> None:
+        # A manual turn-ON (here: heat while the room is already warm enough)
+        # must still be respected for manual_hold_minutes.
+        entities = base_entities("heat")
+        entities["climate.test"] = make_entity(
+            "heat",
+            age_seconds=30 * 60,
+            parent_id=None,
+            attributes={**entities["climate.test"].attributes, "current_temperature": 24.0},
+        )
+        harness = self.harness(
+            {
+                "heat_target": 21,
+                "heat_tolerance": 0.9,
+                "allow_manual": True,
+                "manual_hold_minutes": 60,
+            },
+            entities,
+        )
+        variables = harness.render_variables()
+        self.assertTrue(variables["manual_active"])
+
+    def master_switch_trigger(self) -> dict[str, Any]:
+        return next(
+            trigger
+            for trigger in self.automation["triggers"]
+            if trigger.get("id") == "master_switch_changed"
+        )
+
+    def test_master_switch_change_triggers_reevaluation(self) -> None:
+        # Regression test: toggling master_switch must change the template
+        # trigger's rendered value, otherwise the automation would not
+        # re-run immediately when the switch is flipped.
+        trigger = self.master_switch_trigger()
+        entities = base_entities()
+        entities["input_boolean.master"] = make_entity("on", age_seconds=600)
+        harness_on = self.harness({"master_switch": "input_boolean.master"}, entities)
+        value_on = harness_on.render(
+            trigger["value_template"],
+            {"master_switch_for_trigger": harness_on.inputs["master_switch"]},
+        )
+
+        entities["input_boolean.master"] = make_entity("off", age_seconds=600)
+        harness_off = self.harness({"master_switch": "input_boolean.master"}, entities)
+        value_off = harness_off.render(
+            trigger["value_template"],
+            {"master_switch_for_trigger": harness_off.inputs["master_switch"]},
+        )
+
+        self.assertNotEqual(value_on, value_off)
+
+    def test_master_switch_unset_trigger_is_stable(self) -> None:
+        # master_switch defaults to "" (not a list like the other optional
+        # entity inputs), so the trigger must use a template, not a plain
+        # state trigger, or an unset master_switch would fail config
+        # validation ("" is not a valid entity ID).
+        trigger = self.master_switch_trigger()
+        harness = self.harness({"master_switch": ""})
+        result = harness.render(
+            trigger["value_template"],
+            {"master_switch_for_trigger": harness.inputs["master_switch"]},
+        )
+        self.assertFalse(result)
+
     def test_open_window_overrides_manual_cooling_and_high_humidity(self) -> None:
         entities = base_entities("cool")
         entities["binary_sensor.window"] = make_entity("on", age_seconds=120)
