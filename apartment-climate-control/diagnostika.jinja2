@@ -1,0 +1,235 @@
+{#
+  Diagnostika za "Smart Apartment Climate Control"
+  =================================================
+  Prilepi v: Orodja za razvijalce -> Predloge (Developer Tools -> Template)
+
+  1. Spodaj v bloku "VHODI" zamenjaj vse <...> s svojimi dejanskimi entity_id
+     (natanko tistimi, ki si jih izbral kot vhode te avtomatizacije) in številkami
+     (ciljne temperature, odstopanja, čakanja...).
+  2. Shrani si to datoteko s svojimi vrednostmi - prihodnjič samo odpreš
+     Predloge, prilepiš in takoj dobiš celoten izpis, ki ga pošlješ Claudu.
+
+  Logika spodaj je kopija spremenljivk iz smart-apartment-climate-control.yaml,
+  da izpis natanko ustreza temu, kar vidi avtomatizacija sama.
+#}
+
+{%- set climate_entity = "<climate.xxx>" -%}
+{%- set temp_sensors = ["<sensor.sobna_temperatura>"] -%}
+{%- set humidity_sensors = [] -%}
+{%- set humidity_aggregation = "average" -%}
+{%- set person_entities = ["<person.xxx>"] -%}
+{%- set presence_distance_km = 10 -%}
+{%- set window_sensors = [] -%}
+{%- set heating_sensors = ["<binary_sensor.ecodan_gretje_radiatorjev>"] -%}
+{%- set unavailable_blocks = false -%}
+{%- set outdoor_sensor = "<sensor.zunanja_temperatura>" -%}
+{%- set schedule_entity = "" -%}
+{%- set master_switch = "" -%}
+
+{%- set enable_heating = true -%}
+{%- set heat_target = 21 -%}
+{%- set heat_tol = 0.9 -%}
+{%- set heat_min_outdoor = -15 -%}
+{%- set heat_max_delta = 0 -%}
+
+{%- set enable_cooling = true -%}
+{%- set cool_target = 25 -%}
+{%- set cool_tol = 0.5 -%}
+{%- set cool_max_delta = 8 -%}
+{%- set cool_block_outdoor = false -%}
+
+{%- set enable_dehum = false -%}
+{%- set hum_start = 65 -%}
+{%- set hum_target = 60 -%}
+{%- set dehum_during_schedule_pause = false -%}
+
+{%- set sensor_stability_seconds = 30 -%}
+{%- set open_delay_s = 0 -%}
+{%- set close_delay_s = 0 -%}
+
+{%- set allow_manual = true -%}
+{%- set manual_hold_min = 60 -%}
+{%- set min_run = 5 -%}
+{%- set min_idle = 5 -%}
+
+{#- ===================== OD TU NAPREJ NIČ NE SPREMINJAJ ===================== -#}
+
+{%- set actual_mode = states(climate_entity) -%}
+{%- set schedule_active = (schedule_entity == '' or is_state(schedule_entity, 'on')) -%}
+{%- set hvac_modes = state_attr(climate_entity, 'hvac_modes') or [] -%}
+{%- set state_age_min = ((now() - states[climate_entity].last_changed).total_seconds() / 60) -%}
+
+{%- set ns_t = namespace(values=[]) -%}
+{%- for sensor in expand(temp_sensors) -%}
+  {%- if is_number(sensor.state) and (sensor_stability_seconds | int(0) == 0 or (now() - sensor.last_changed).total_seconds() >= sensor_stability_seconds | float(0)) -%}
+    {%- set ns_t.values = ns_t.values + [sensor.state | float] -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- if temp_sensors | length == 0 -%}
+  {%- set current_temp = state_attr(climate_entity, 'current_temperature') | float(none) -%}
+{%- elif ns_t.values | length > 0 -%}
+  {%- set current_temp = (ns_t.values | sum / ns_t.values | length) | round(2) -%}
+{%- else -%}
+  {%- set current_temp = none -%}
+{%- endif -%}
+
+{%- set ns_h = namespace(values=[]) -%}
+{%- for sensor in expand(humidity_sensors) -%}
+  {%- if is_number(sensor.state) and (sensor_stability_seconds | int(0) == 0 or (now() - sensor.last_changed).total_seconds() >= sensor_stability_seconds | float(0)) -%}
+    {%- set ns_h.values = ns_h.values + [sensor.state | float] -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- if ns_h.values | length == 0 -%}
+  {%- if humidity_sensors | length == 0 -%}
+    {%- set current_hum = state_attr(climate_entity, 'current_humidity') | float(none) -%}
+  {%- else -%}
+    {%- set current_hum = none -%}
+  {%- endif -%}
+{%- elif humidity_aggregation == 'maximum' -%}
+  {%- set current_hum = ns_h.values | max | round(1) -%}
+{%- else -%}
+  {%- set current_hum = (ns_h.values | sum / ns_h.values | length) | round(1) -%}
+{%- endif -%}
+
+{%- set outdoor_temp = (states(outdoor_sensor) | float(none)) if outdoor_sensor else none -%}
+
+{%- set ns_wo = namespace(r=false) -%}
+{%- for w in expand(window_sensors) -%}
+  {%- if w.state == 'on' and (now() - w.last_changed).total_seconds() >= open_delay_s | int(0) -%}
+    {%- set ns_wo.r = true -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- set window_open_delayed = ns_wo.r -%}
+
+{%- set ns_wc = namespace(r=false) -%}
+{%- for w in expand(window_sensors) -%}
+  {%- if w.state == 'off' and (now() - w.last_changed).total_seconds() < close_delay_s | int(0) -%}
+    {%- set ns_wc.r = true -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- set window_recently_closed = ns_wc.r -%}
+{%- set window_blocked = window_open_delayed or (window_recently_closed and actual_mode == 'off') -%}
+
+{%- set ns_r = namespace(r=false) -%}
+{%- for h in expand(heating_sensors) -%}
+  {%- if h.state == 'on' or (unavailable_blocks and h.state in ['unavailable', 'unknown']) -%}
+    {%- set ns_r.r = true -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- set radiators_heating = ns_r.r -%}
+
+{%- if person_entities | length == 0 -%}
+  {%- set is_present = true -%}
+{%- else -%}
+  {%- set ns_p = namespace(present=false) -%}
+  {%- for person_entity in person_entities -%}
+    {%- if is_state(person_entity, 'home') -%}
+      {%- set ns_p.present = true -%}
+    {%- else -%}
+      {%- set person_distance = distance(person_entity) -%}
+      {%- if person_distance is not none and person_distance | float <= presence_distance_km | float -%}
+        {%- set ns_p.present = true -%}
+      {%- endif -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- set is_present = ns_p.present -%}
+{%- endif -%}
+
+{%- set heat_outdoor_ok = (outdoor_temp is none or outdoor_temp >= heat_min_outdoor) -%}
+{%- set cool_outdoor_ok = not (cool_block_outdoor and outdoor_temp is not none and current_temp is not none and outdoor_temp < current_temp) -%}
+{%- set cool_limit = (outdoor_temp - cool_max_delta | float(0)) if (outdoor_temp is not none and cool_max_delta | float(0) > 0) else none -%}
+{%- set heat_limit = (outdoor_temp + heat_max_delta | float(0)) if (outdoor_temp is not none and heat_max_delta | float(0) > 0) else none -%}
+{%- set heat_target_final = ([heat_target, heat_limit] | min) if heat_limit is not none else heat_target -%}
+{%- set cool_target_base = ([cool_target, heat_target] | max) if enable_heating else cool_target -%}
+{%- set cool_target_eff = ([cool_target_base, cool_limit] | max) if cool_limit is not none else cool_target_base -%}
+
+{%- set want_dehum = (enable_dehum and 'dry' in hvac_modes and not window_blocked
+    and ((current_hum is none and humidity_sensors | length > 0 and actual_mode == 'dry')
+      or (current_hum is not none and (current_hum >= hum_start or (actual_mode == 'dry' and current_hum > hum_target))))) -%}
+
+{%- if current_temp is none -%}
+  {%- set thermo_mode = 'off' if actual_mode == 'dry' else actual_mode -%}
+{%- elif enable_heating and not radiators_heating and heat_outdoor_ok and 'heat' in hvac_modes
+        and (current_temp < heat_target_final - heat_tol or (actual_mode == 'heat' and current_temp < heat_target_final)) -%}
+  {%- set thermo_mode = 'heat' -%}
+{%- elif enable_cooling and not radiators_heating and cool_outdoor_ok and 'cool' in hvac_modes
+        and (current_temp > cool_target_eff + cool_tol or (actual_mode == 'cool' and current_temp > cool_target_eff)) -%}
+  {%- set thermo_mode = 'cool' -%}
+{%- else -%}
+  {%- set thermo_mode = 'off' -%}
+{%- endif -%}
+
+{%- if window_blocked -%}
+  {%- set desired_mode = 'off' -%}
+{%- elif not schedule_active -%}
+  {%- if radiators_heating -%}
+    {%- set desired_mode = 'off' -%}
+  {%- elif allow_manual -%}
+    {%- set desired_mode = actual_mode -%}
+  {%- else -%}
+    {%- set desired_mode = 'off' -%}
+  {%- endif -%}
+{%- elif want_dehum -%}
+  {%- set desired_mode = 'dry' -%}
+{%- elif not is_present -%}
+  {%- set desired_mode = 'off' -%}
+{%- else -%}
+  {%- set desired_mode = thermo_mode -%}
+{%- endif -%}
+
+{%- set forced = (
+    (window_blocked and actual_mode != 'off')
+    or (schedule_active and radiators_heating and actual_mode not in ['off', 'dry'])
+    or (not schedule_active and radiators_heating and actual_mode != 'off')
+    or (schedule_active and not is_present and actual_mode in ['heat', 'cool'])
+    or (not schedule_active and not allow_manual and desired_mode == 'off' and actual_mode != 'off')
+  ) -%}
+
+{%- set manual_active = (schedule_active and allow_manual and not forced and actual_mode != 'off'
+    and actual_mode != desired_mode
+    and state_age_min < manual_hold_min | float(60)
+    and states[climate_entity].context.parent_id is none) -%}
+
+{%- set change_allowed = forced or state_age_min >= (min_idle if actual_mode == 'off' else min_run) | float(0) -%}
+
+=== DIAGNOSTIKA: Smart Apartment Climate Control ===
+Čas: {{ now() }}
+
+--- VHODNI PODATKI ---
+climate_entity:        {{ climate_entity }}
+actual_mode (stanje):  {{ actual_mode }}
+hvac_modes:            {{ hvac_modes }}
+state_age_min:         {{ state_age_min | round(1) }} min (od zadnje spremembe stanja klime)
+context.parent_id:     {{ states[climate_entity].context.parent_id }}  ({{ "ROČNO" if states[climate_entity].context.parent_id is none else "AVTOMATIZACIJA" }})
+
+current_temp:          {{ current_temp }}
+current_hum:           {{ current_hum }}
+outdoor_temp:          {{ outdoor_temp }}
+
+schedule_entity:       "{{ schedule_entity }}"  -> schedule_active = {{ schedule_active }}
+master_switch:         "{{ master_switch }}"
+is_present:            {{ is_present }}
+window_blocked:        {{ window_blocked }}
+radiators_heating:     {{ radiators_heating }}
+
+--- NASTAVITVE ---
+enable_heating:        {{ enable_heating }}   heat_target: {{ heat_target }}   heat_tol: {{ heat_tol }}   heat_min_outdoor: {{ heat_min_outdoor }}
+enable_cooling:        {{ enable_cooling }}   cool_target: {{ cool_target }}   cool_tol: {{ cool_tol }}   cool_max_delta: {{ cool_max_delta }}
+enable_dehum:          {{ enable_dehum }}     hum_start: {{ hum_start }}       hum_target: {{ hum_target }}
+allow_manual:          {{ allow_manual }}     manual_hold_min: {{ manual_hold_min }}
+min_run:               {{ min_run }} min      min_idle: {{ min_idle }} min
+
+--- IZRAČUNANE VREDNOSTI (enako kot v avtomatizaciji) ---
+heat_target_final:     {{ heat_target_final }}   (prag za vklop gretja: {{ heat_target_final - heat_tol }})
+cool_target_eff:       {{ cool_target_eff }}      (prag za vklop hlajenja: {{ cool_target_eff + cool_tol }})
+heat_outdoor_ok:       {{ heat_outdoor_ok }}
+cool_outdoor_ok:       {{ cool_outdoor_ok }}
+want_dehum:            {{ want_dehum }}
+
+thermo_mode:           {{ thermo_mode }}
+desired_mode:          {{ desired_mode }}
+forced:                {{ forced }}
+manual_active:         {{ manual_active }}   <-- če TRUE, avtomatizacija NE spreminja načina
+change_allowed:        {{ change_allowed }}  <-- če FALSE, blokira zaščita kompresorja (min_run/min_idle)
+
+=== KONEC ===

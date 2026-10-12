@@ -319,9 +319,10 @@ blueprint:
         allow_manual:
           name: Dovoli ročno upravljanje z daljincem
           description: >
-            Če je vklopljeno, avtomatizacija po ročni spremembi načina počaka.
-            Okna in radiatorji (gretje/hlajenje) veljajo vedno. Če je izklopljeno,
-            avtomatizacija ročne spremembe razveljavi.
+            Če je vklopljeno, avtomatizacija po ročnem vklopu/spremembi načina (heat/cool/dry/
+            fan_only) počaka. Ročni izklop (off) čakanja NE sproži - avtomatizacija lahko takoj
+            znova vklopi, če je to potrebno. Okna in radiatorji (gretje/hlajenje) veljajo vedno.
+            Če je izklopljeno, avtomatizacija ročne spremembe razveljavi.
           default: true
           selector:
             boolean: {}
@@ -600,6 +601,9 @@ triggers:
       minutes: !input fan_cycle_interval_minutes
   - trigger: state
     entity_id: !input person_entities
+  - trigger: template
+    id: master_switch_changed
+    value_template: "{{ master_switch_for_trigger != '' and states(master_switch_for_trigger) }}"
   - trigger: state
     entity_id: !input temp_sensors
     for:
@@ -818,8 +822,12 @@ variables:
        or (not schedule_active and not allow_manual and desired_mode == 'off' and actual_mode != 'off') }}
   block_reason: "{{ 'okno' if window_blocked else 'radiatorji' }}"
 
+  # Ročni VKLOP (heat/cool/dry/fan_only) sproži čakanje (manual_hold_minutes).
+  # Ročni IZKLOP (off) čakanja ne sproži, da avtomatizacija takoj spet prevzame nadzor,
+  # če je npr. gretje/hlajenje po temperaturi spet potrebno.
   manual_active: >
-    {{ schedule_active and allow_manual and not forced and actual_mode != desired_mode
+    {{ schedule_active and allow_manual and not forced and actual_mode != 'off'
+       and actual_mode != desired_mode
        and state_age_min < manual_hold_min | float(60)
        and states[climate_entity].context.parent_id is none }}
   change_allowed: >
