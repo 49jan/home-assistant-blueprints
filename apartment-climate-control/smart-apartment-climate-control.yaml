@@ -841,7 +841,7 @@ conditions:
   - condition: template
     value_template: "{{ states(climate_entity) not in ['unavailable', 'unknown'] }}"
   - condition: template
-    value_template: "{{ master_switch == '' or is_state(master_switch, 'on') or trigger.id == 'schedule_inactive' }}"
+    value_template: "{{ master_switch == '' or is_state(master_switch, 'on') }}"
 
 actions:
   - choose:
@@ -965,6 +965,8 @@ actions:
                   - condition: state
                     entity_id: !input climate_entity
                     state: fan_only
+                  - condition: template
+                    value_template: "{{ master_switch == '' or is_state(master_switch, 'on') }}"
                 then:
                   - action: climate.turn_off
                     target:
