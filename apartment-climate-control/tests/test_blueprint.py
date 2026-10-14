@@ -587,6 +587,24 @@ class BlueprintTests(unittest.TestCase):
         )
         self.assertFalse(result)
 
+    def master_switch_condition(self) -> dict[str, Any]:
+        return self.automation["conditions"][1]
+
+    def test_master_switch_off_blocks_automation_even_on_schedule_inactive(self) -> None:
+        # Regression test: the automation must do nothing while master_switch
+        # is off, including when the schedule just turned inactive. A
+        # previous version special-cased trigger.id == 'schedule_inactive' to
+        # bypass master_switch, which forced the climate off even though the
+        # blueprint documents "if off, the automation does nothing".
+        condition = self.master_switch_condition()
+        entities = base_entities()
+        entities["input_boolean.master"] = make_entity("off", age_seconds=600)
+        harness = self.harness({"master_switch": "input_boolean.master"}, entities)
+        variables = dict(harness.render_variables())
+        variables["trigger"] = SimpleNamespace(id="schedule_inactive")
+        result = harness.render(condition["value_template"], variables)
+        self.assertFalse(result)
+
     def test_open_window_overrides_manual_cooling_and_high_humidity(self) -> None:
         entities = base_entities("cool")
         entities["binary_sensor.window"] = make_entity("on", age_seconds=120)
@@ -788,6 +806,40 @@ class BlueprintTests(unittest.TestCase):
                 entities.update(extra_entities)
                 harness = self.harness(inputs, entities, distances)
                 self.assertTrue(harness.render(wait_template, harness.render_variables()))
+
+    def fan_cycle_default_master_switch_condition(self) -> dict[str, Any]:
+        default_if = self.fan_branch()["sequence"][2]["default"][0]["if"]
+        return next(item for item in default_if if item.get("condition") == "template")
+
+    def test_fan_cycle_default_turn_off_respects_master_switch_off(self) -> None:
+        # Regression test: if master_switch turns off while the preventive
+        # FAN pause is waiting, the wait_template ends early (it already
+        # checks master_switch), but the nested choose's "default" block
+        # used to call climate.turn_off unconditionally regardless of
+        # master_switch, violating "if off, the automation does nothing".
+        condition = self.fan_cycle_default_master_switch_condition()
+        entities = base_entities("fan_only")
+        entities["input_boolean.master"] = make_entity("off", age_seconds=600)
+        harness = self.harness({"master_switch": "input_boolean.master"}, entities)
+        result = harness.render(condition["value_template"], harness.render_variables())
+        self.assertFalse(result)
+
+    def test_fan_cycle_default_turn_off_still_fires_when_master_switch_on(self) -> None:
+        # The master_switch guard must not break the existing cleanup
+        # behaviour: with master_switch on (or unset), the default branch
+        # should still allow turning off a stuck fan_only state.
+        condition = self.fan_cycle_default_master_switch_condition()
+        entities = base_entities("fan_only")
+        entities["input_boolean.master"] = make_entity("on", age_seconds=600)
+        harness_on = self.harness({"master_switch": "input_boolean.master"}, entities)
+        self.assertTrue(
+            harness_on.render(condition["value_template"], harness_on.render_variables())
+        )
+
+        harness_unset = self.harness({"master_switch": ""}, base_entities("fan_only"))
+        self.assertTrue(
+            harness_unset.render(condition["value_template"], harness_unset.render_variables())
+        )
 
     def test_fan_cycle_does_not_resume_cooling_when_humidity_requires_dry(self) -> None:
         entities = base_entities("fan_only")
