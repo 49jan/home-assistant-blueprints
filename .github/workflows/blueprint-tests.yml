@@ -12,7 +12,8 @@ permissions:
   contents: read
 
 jobs:
-  apartment-climate-blueprint:
+  apartment-climate-control:
+    name: Apartment climate control
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -31,5 +32,22 @@ jobs:
       - name: Run offline blueprint tests
         run: python -m unittest discover -s apartment-climate-control/tests -v
 
-      - name: Run lights-on-too-long blueprint tests
+  lights-on-too-long:
+    name: Lights on too long
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-test.txt
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-test.txt
+
+      - name: Run offline blueprint tests
         run: python -m unittest discover -s lights-on-too-long/tests -v
