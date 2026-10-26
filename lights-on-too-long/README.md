@@ -23,7 +23,7 @@ Odziv na gumbe je v isti avtomatizaciji (event `mobile_app_notification_action`)
 ## Zahteve
 
 - Home Assistant 2024.10.0 ali novejši.
-- Aplikacija Home Assistant Companion; telefone izbereš v vhodu *Telefoni za obvestila* (naprave integracije `mobile_app`), blueprint sam sestavi storitev `notify.mobile_app_<ime naprave>`.
+- Aplikacija Home Assistant Companion; telefone izbereš v vhodu *Telefoni za obvestila* (naprave integracije `mobile_app`), blueprint sam sestavi storitev `notify.mobile_app_<ime naprave>`. Neobvezno lahko ročno dodaš tudi notify storitev ali skupino (npr. `notify.family_group`); notify skupin Home Assistant ne ponuja v izbirniku, zato jih vpišeš z imenom.
 
 ## Omejitve
 
