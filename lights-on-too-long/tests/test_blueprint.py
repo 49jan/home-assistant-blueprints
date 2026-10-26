@@ -76,6 +76,8 @@ def render(template: str, variables: dict[str, Any], states: States) -> Any:
         entity in states and states[entity].state == value
     )
     env.tests["is_state"] = env.globals["is_state"]
+    env.globals["device_attr"] = lambda device, attr: {"dev1": "Telefon Jan"}[device]
+    env.filters["slugify"] = lambda value: str(value).lower().replace(" ", "_")
     result = env.from_string(template).render(**variables)
     if isinstance(result, str):
         # Home Assistant strips the output and parses it as a Python literal.
@@ -119,6 +121,11 @@ class LightsOnTooLongBlueprintTest(unittest.TestCase):
     def test_trigger_ids(self) -> None:
         ids = [trigger["id"] for trigger in self.blueprint["trigger"]]
         self.assertEqual(ids, ["too_long", "away", "away_light", "action"])
+
+    def test_notify_services_built_from_devices(self) -> None:
+        variables = {"notify_devices_in": ["dev1"]}
+        result = render(self.blueprint["variables"]["notify_list"], variables, States())
+        self.assertEqual(result, ["notify.mobile_app_telefon_jan"])
 
     def overdue(self, trigger_id: str, persons_state: str, minutes_on: int) -> list[str]:
         states = States(

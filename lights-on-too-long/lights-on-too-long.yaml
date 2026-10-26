@@ -46,13 +46,12 @@ blueprint:
       icon: mdi:cellphone-message
       collapsed: false
       input:
-        notify_services:
-          name: Notify storitve telefonov
-          description: >
-            Imena storitev za obvestila, npr. `notify.mobile_app_telefon_jan`.
-            Dodaj eno ali več.
+        notify_devices:
+          name: Telefoni za obvestila
+          description: Izberi eno ali več naprav z aplikacijo Home Assistant Companion.
           selector:
-            text:
+            device:
+              integration: mobile_app
               multiple: true
     casi:
       name: Časi
@@ -116,7 +115,13 @@ variables:
   monitored: !input monitored_entities
   excluded: !input excluded_entities
   persons: !input person_entities
-  notify_list: !input notify_services
+  notify_devices_in: !input notify_devices
+  notify_list: >
+    {% set ns = namespace(items=[]) %}
+    {% for d in notify_devices_in %}
+      {% set ns.items = ns.items + ['notify.mobile_app_' ~ (device_attr(d, 'name') | slugify)] %}
+    {% endfor %}
+    {{ ns.items }}
   on_duration_in: !input on_duration
   away_delay_in: !input away_delay
   quiet_enabled: !input quiet_hours_enabled
