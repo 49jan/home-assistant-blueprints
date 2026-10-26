@@ -30,3 +30,6 @@ jobs:
 
       - name: Run offline blueprint tests
         run: python -m unittest discover -s apartment-climate-control/tests -v
+
+      - name: Run lights-on-too-long blueprint tests
+        run: python -m unittest discover -s lights-on-too-long/tests -v

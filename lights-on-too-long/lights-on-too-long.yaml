@@ -1,0 +1,309 @@
+blueprint:
+  name: Luči predolgo prižgane
+  description: |
+    Pošlje obvestilo na telefon (Home Assistant Companion), ko katera od spremljanih luči ali stikal gori dlje od nastavljenega časa, in ponudi ugasnitev vseh ali samo posameznih.
+
+    **Delovanje:**
+    - Ko je luč/stikalo prižgano dlje od nastavljenega časa (privzeto 1 h), pride **eno zbirno obvestilo** z gumbi *Ugasni vse*, *Ugasni posamezno* in *Pusti*.
+    - *Ugasni posamezno* pošlje za vsako luč svoje obvestilo z gumbom *Ugasni*.
+    - Opomnik se pošlje samo enkrat na prižig (brez ponavljanja).
+    - Neobvezno: če so **vse izbrane osebe odsotne**, vpraša že po krajšem času (privzeto 5 min).
+    - Izključene entitete se ne spremljajo in jih gumbi nikoli ne ugasnejo.
+
+    **Opombe:**
+    - Časovnik "prižgano dlje kot" se po ponovnem zagonu Home Assistanta ponastavi; luči, prižgane pred zagonom, sprožijo opomnik šele ob naslednjem prižigu.
+    - Android prikaže največ 3 gumbe, zato je posamezna izbira dvostopenjska.
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  source_url: https://raw.githubusercontent.com/49jan/home-assistant-blueprints/main/lights-on-too-long/lights-on-too-long.yaml
+  input:
+    naprave:
+      name: Naprave
+      icon: mdi:lightbulb-group
+      collapsed: false
+      input:
+        monitored_entities:
+          name: Spremljane luči in stikala
+          selector:
+            entity:
+              domain:
+                - light
+                - switch
+              multiple: true
+        excluded_entities:
+          name: Izključene entitete (neobvezno)
+          description: Entitete, ki se ne spremljajo in se jih ne ugaša (npr. bojler, črpalka).
+          default: []
+          selector:
+            entity:
+              domain:
+                - light
+                - switch
+              multiple: true
+    obvestila:
+      name: Obvestila
+      icon: mdi:cellphone-message
+      collapsed: false
+      input:
+        notify_services:
+          name: Notify storitve telefonov
+          description: >
+            Imena storitev za obvestila, npr. `notify.mobile_app_telefon_jan`.
+            Dodaj eno ali več.
+          selector:
+            text:
+              multiple: true
+    casi:
+      name: Časi
+      icon: mdi:timer-outline
+      collapsed: false
+      input:
+        on_duration:
+          name: Čas, po katerem vpraša
+          description: Koliko časa naj luč gori, preden pride obvestilo.
+          default:
+            hours: 1
+            minutes: 0
+            seconds: 0
+          selector:
+            duration:
+        quiet_hours_enabled:
+          name: Ne moti ponoči
+          description: Med izbranim oknom se obvestila ne pošiljajo (ne velja, če so vsi odsotni).
+          default: false
+          selector:
+            boolean:
+        quiet_start:
+          name: Začetek tihega obdobja
+          default: "23:00:00"
+          selector:
+            time:
+        quiet_end:
+          name: Konec tihega obdobja
+          default: "07:00:00"
+          selector:
+            time:
+    prisotnost:
+      name: Prisotnost (neobvezno)
+      icon: mdi:account-off
+      collapsed: true
+      input:
+        person_entities:
+          name: Osebe
+          description: >
+            Če so vse izbrane osebe odsotne (ne doma), vpraša že po času odsotnosti spodaj.
+            Prazen seznam izklopi to funkcijo.
+          default: []
+          selector:
+            entity:
+              domain: person
+              multiple: true
+        away_delay:
+          name: Čas po odhodu vseh
+          description: Koliko časa so vse osebe odsotne (in luč prižgana), preden vpraša.
+          default:
+            hours: 0
+            minutes: 5
+            seconds: 0
+          selector:
+            duration:
+
+mode: queued
+max: 10
+
+variables:
+  monitored: !input monitored_entities
+  excluded: !input excluded_entities
+  persons: !input person_entities
+  notify_list: !input notify_services
+  on_duration_in: !input on_duration
+  away_delay_in: !input away_delay
+  quiet_enabled: !input quiet_hours_enabled
+  quiet_start_in: !input quiet_start
+  quiet_end_in: !input quiet_end
+  prefix: "LIGHTS_OFF_{{ this.entity_id }}"
+  summary_tag: "lights_on_too_long_{{ this.entity_id }}"
+  on_s: >
+    {{ (on_duration_in.days | default(0) | int * 86400)
+       + (on_duration_in.hours | default(0) | int * 3600)
+       + (on_duration_in.minutes | default(0) | int * 60)
+       + (on_duration_in.seconds | default(0) | int) }}
+  away_s: >
+    {{ (away_delay_in.days | default(0) | int * 86400)
+       + (away_delay_in.hours | default(0) | int * 3600)
+       + (away_delay_in.minutes | default(0) | int * 60)
+       + (away_delay_in.seconds | default(0) | int) }}
+  all_away: >
+    {{ persons | count > 0
+       and persons | select('is_state', 'not_home') | list | count == persons | count }}
+  # Pri odsotnosti vseh je prag krajši; pri odzivu na gumb se uporabi najkrajši prag.
+  limit_s: >
+    {{ (away_s if all_away else on_s) | int }}
+  action_limit_s: >
+    {{ ([on_s, away_s] | min if persons | count > 0 else on_s) | int }}
+  act: >
+    {{ trigger.event.data.action | default('') if trigger.id == 'action' else '' }}
+  overdue: >
+    {% set limit = (action_limit_s if trigger.id == 'action' else limit_s) | int %}
+    {% set ns = namespace(items=[]) %}
+    {% for e in monitored if e not in excluded and is_state(e, 'on')
+       and (now() - states[e].last_changed).total_seconds() >= limit - 1 %}
+      {% set ns.items = ns.items + [e] %}
+    {% endfor %}
+    {{ ns.items }}
+  overdue_names: >
+    {% set ns = namespace(items=[]) %}
+    {% for e in overdue %}
+      {% set ns.items = ns.items + [states[e].name] %}
+    {% endfor %}
+    {{ ns.items | join(', ') }}
+  quiet_now: >
+    {% if quiet_enabled and not all_away %}
+      {% set n = now().strftime('%H:%M:%S') %}
+      {% set qs = quiet_start_in | string %}
+      {% set qe = quiet_end_in | string %}
+      {{ (qs <= n < qe) if qs <= qe else (n >= qs or n < qe) }}
+    {% else %}false{% endif %}
+
+trigger:
+  - trigger: state
+    id: too_long
+    entity_id: !input monitored_entities
+    to: "on"
+    for: !input on_duration
+  - trigger: state
+    id: away
+    entity_id: !input person_entities
+    to: not_home
+    for: !input away_delay
+  - trigger: state
+    id: away_light
+    entity_id: !input monitored_entities
+    to: "on"
+    for: !input away_delay
+  - trigger: event
+    id: action
+    event_type: mobile_app_notification_action
+
+condition: []
+
+action:
+  - choose:
+      # --- Odziv na gumbe v obvestilu ---
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.id == 'action' and act.startswith(prefix ~ '_') }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ act == prefix ~ '_ALL' }}"
+                sequence:
+                  - if:
+                      - condition: template
+                        value_template: "{{ overdue | count > 0 }}"
+                    then:
+                      - action: homeassistant.turn_off
+                        target:
+                          entity_id: "{{ overdue }}"
+                  - repeat:
+                      for_each: "{{ notify_list }}"
+                      sequence:
+                        - action: "{{ repeat.item }}"
+                          data:
+                            message: clear_notification
+                            data:
+                              tag: "{{ summary_tag }}"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ act == prefix ~ '_PICK' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_list }}"
+                      sequence:
+                        - action: "{{ repeat.item }}"
+                          data:
+                            message: clear_notification
+                            data:
+                              tag: "{{ summary_tag }}"
+                  - repeat:
+                      for_each: "{{ overdue }}"
+                      sequence:
+                        - variables:
+                            light_id: "{{ repeat.item }}"
+                        - repeat:
+                            for_each: "{{ notify_list }}"
+                            sequence:
+                              - action: "{{ repeat.item }}"
+                                data:
+                                  title: Luč je prižgana
+                                  message: "{{ states[light_id].name }}"
+                                  data:
+                                    tag: "{{ prefix }}_{{ light_id }}"
+                                    group: "{{ summary_tag }}"
+                                    actions:
+                                      - action: "{{ prefix }}_ONE_{{ light_id }}"
+                                        title: Ugasni
+              - conditions:
+                  - condition: template
+                    value_template: "{{ act == prefix ~ '_KEEP' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ notify_list }}"
+                      sequence:
+                        - action: "{{ repeat.item }}"
+                          data:
+                            message: clear_notification
+                            data:
+                              tag: "{{ summary_tag }}"
+              - conditions:
+                  - condition: template
+                    value_template: >
+                      {% set one = act[(prefix ~ '_ONE_') | length:] %}
+                      {{ act.startswith(prefix ~ '_ONE_')
+                         and one in monitored and one not in excluded }}
+                sequence:
+                  - variables:
+                      one_id: "{{ act[(prefix ~ '_ONE_') | length:] }}"
+                  - action: homeassistant.turn_off
+                    target:
+                      entity_id: "{{ one_id }}"
+                  - repeat:
+                      for_each: "{{ notify_list }}"
+                      sequence:
+                        - action: "{{ repeat.item }}"
+                          data:
+                            message: clear_notification
+                            data:
+                              tag: "{{ prefix }}_{{ one_id }}"
+      # --- Opomnik: luči predolgo prižgane ---
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.id in ['too_long', 'away', 'away_light']
+                 and overdue | count > 0
+                 and not quiet_now
+                 and (trigger.id == 'too_long' or all_away) }}
+        sequence:
+          - variables:
+              notif_actions: >
+                {% set a = [{'action': prefix ~ '_ALL',
+                             'title': 'Ugasni vse' if overdue | count > 1 else 'Ugasni'}] %}
+                {% if overdue | count > 1 %}
+                  {% set a = a + [{'action': prefix ~ '_PICK', 'title': 'Ugasni posamezno'}] %}
+                {% endif %}
+                {% set a = a + [{'action': prefix ~ '_KEEP', 'title': 'Pusti'}] %}
+                {{ a }}
+          - repeat:
+              for_each: "{{ notify_list }}"
+              sequence:
+                - action: "{{ repeat.item }}"
+                  data:
+                    title: >
+                      {{ 'Vsi odsotni – luči so prižgane' if all_away else 'Luči so predolgo prižgane' }}
+                    message: "{{ overdue_names }}"
+                    data:
+                      tag: "{{ summary_tag }}"
+                      group: "{{ summary_tag }}"
+                      actions: "{{ notif_actions }}"
