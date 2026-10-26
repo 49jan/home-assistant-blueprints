@@ -123,9 +123,24 @@ class LightsOnTooLongBlueprintTest(unittest.TestCase):
         self.assertEqual(ids, ["too_long", "away", "away_light", "action"])
 
     def test_notify_services_built_from_devices(self) -> None:
-        variables = {"notify_devices_in": ["dev1"]}
+        variables = {"notify_devices_in": ["dev1"], "notify_extra_in": []}
         result = render(self.blueprint["variables"]["notify_list"], variables, States())
         self.assertEqual(result, ["notify.mobile_app_telefon_jan"])
+
+    def test_notify_extra_services_and_groups(self) -> None:
+        variables = {
+            "notify_devices_in": ["dev1"],
+            "notify_extra_in": ["family_group", " notify.mobile_app_pixel_8 ", "notify.mobile_app_telefon_jan"],
+        }
+        result = render(self.blueprint["variables"]["notify_list"], variables, States())
+        self.assertEqual(
+            result,
+            [
+                "notify.mobile_app_telefon_jan",
+                "notify.family_group",
+                "notify.mobile_app_pixel_8",
+            ],
+        )
 
     def overdue(self, trigger_id: str, persons_state: str, minutes_on: int) -> list[str]:
         states = States(
