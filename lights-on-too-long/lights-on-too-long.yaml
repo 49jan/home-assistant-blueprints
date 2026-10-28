@@ -188,7 +188,7 @@ variables:
       {% set qs = quiet_start_in | string %}
       {% set qe = quiet_end_in | string %}
       {{ (qs <= n < qe) if qs <= qe else (n >= qs or n < qe) }}
-    {% else %}false{% endif %}
+    {% else %}{{ false }}{% endif %}
 
 trigger:
   - trigger: state
