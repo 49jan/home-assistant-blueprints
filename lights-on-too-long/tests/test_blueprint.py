@@ -171,6 +171,57 @@ class LightsOnTooLongBlueprintTest(unittest.TestCase):
         self.assertEqual(self.overdue("away", "not_home", 6), ["light.a"])
         self.assertEqual(self.overdue("away", "not_home", 2), [])
 
+    def quiet_now(self, enabled: bool, all_away: bool, now: datetime) -> Any:
+        global FIXED_NOW
+        original = FIXED_NOW
+        FIXED_NOW = now
+        try:
+            variables = {
+                "quiet_enabled": enabled,
+                "all_away": all_away,
+                "quiet_start_in": "23:00:00",
+                "quiet_end_in": "07:00:00",
+            }
+            return render(self.blueprint["variables"]["quiet_now"], variables, States())
+        finally:
+            FIXED_NOW = original
+
+    def test_quiet_now_is_real_boolean_when_disabled(self) -> None:
+        # Regression: the disabled branch used to render the string "false",
+        # which is truthy, so `not quiet_now` blocked every reminder.
+        night = datetime(2026, 10, 26, 2, 0, tzinfo=timezone.utc)
+        result = self.quiet_now(False, False, night)
+        self.assertIs(result, False)
+
+    def test_quiet_now_window(self) -> None:
+        night = datetime(2026, 10, 26, 2, 0, tzinfo=timezone.utc)
+        day = datetime(2026, 10, 26, 12, 0, tzinfo=timezone.utc)
+        self.assertIs(self.quiet_now(True, False, night), True)
+        self.assertIs(self.quiet_now(True, False, day), False)
+        self.assertIs(self.quiet_now(True, True, night), False)
+
+    def reminder_condition(self, trigger_id: str, quiet_now: Any, all_away: bool, overdue: list[str]) -> Any:
+        branch = self.blueprint["action"][0]["choose"][1]
+        template = branch["conditions"][0]["value_template"]
+        variables = {
+            "trigger": SimpleNamespace(id=trigger_id),
+            "overdue": overdue,
+            "quiet_now": quiet_now,
+            "all_away": all_away,
+        }
+        return render(template, variables, States())
+
+    def test_reminder_condition_fires_with_quiet_hours_disabled(self) -> None:
+        # quiet_now is taken from the real variable template, as in Home Assistant.
+        quiet_now = self.quiet_now(False, False, FIXED_NOW)
+        self.assertIs(self.reminder_condition("too_long", quiet_now, False, ["switch.a"]), True)
+
+    def test_reminder_condition_blocked_cases(self) -> None:
+        self.assertIs(self.reminder_condition("too_long", False, False, []), False)
+        self.assertIs(self.reminder_condition("too_long", True, False, ["switch.a"]), False)
+        self.assertIs(self.reminder_condition("away_light", False, False, ["switch.a"]), False)
+        self.assertIs(self.reminder_condition("away_light", False, True, ["switch.a"]), True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,256 @@
+blueprint:
+  name: Heating Source Advisor
+  description: |
+    Enkrat dnevno preveri dnevno vremensko napoved in opozori, kdaj je smiselno sezonsko
+    preklopiti ogrevanje med klimami (zrak-zrak) in toplotno črpalko z radiatorji (zrak-voda).
+    Ničesar ne preklaplja sam; preklop je ročna odločitev, običajno dvakrat letno.
+
+    **Priporočili:**
+    1. Ogrevaš s klimami, povprečna dnevna temperatura naslednjih dni pa bo pod pragom -> "preklopi na toplotno črpalko".
+    2. Ogrevaš s toplotno črpalko, napoved in povprečje zadnjih dni pa sta nad pragom -> "preklopi na klime".
+
+    **Opombe:**
+    - Trenutni vir določa input_boolean (vklopljen = toplotna črpalka). Prestavi ga ob preklopu ali z gumbom v obvestilu.
+    - Po preklopu nastavljeno število dni ni novega priporočila, zato se vir ne menja pogosto.
+    - Dokler priporočilo velja in ne preklopiš, se obvestilo ponovi enkrat dnevno.
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  source_url: https://raw.githubusercontent.com/49jan/home-assistant-blueprints/main/heating-source-advisor/heating-source-advisor.yaml
+  input:
+    naprave:
+      name: Vir ogrevanja in podatki
+      icon: mdi:heat-pump
+      collapsed: false
+      input:
+        source_helper:
+          name: Trenutni vir ogrevanja
+          description: input_boolean; vklopljen = toplotna črpalka (radiatorji), izklopljen = klime.
+          selector:
+            entity:
+              domain: input_boolean
+        weather_entity:
+          name: Vremenska napoved
+          description: Vremenska entiteta z dnevno napovedjo.
+          selector:
+            entity:
+              domain: weather
+        trend_sensor:
+          name: Povprečje zunanje temperature zadnjih dni (neobvezno)
+          description: >
+            Npr. pomočnik Statistics (povprečje zunanjega senzorja, zadnji 3 dnevi). Upošteva se
+            samo pri vrnitvi na klime, da je otoplitev potrjena. Prazno = samo napoved.
+          default: ""
+          selector:
+            entity:
+              domain: sensor
+              device_class: temperature
+        master_switch:
+          name: Glavno stikalo (neobvezno)
+          description: Če je izbrano in izklopljeno, avtomatizacija ne dela ničesar.
+          default: ""
+          selector:
+            entity:
+              domain: input_boolean
+
+    pragovi:
+      name: Pragovi
+      icon: mdi:thermometer-lines
+      collapsed: false
+      input:
+        heat_pump_below:
+          name: Toplotna črpalka pod
+          description: >
+            Preklop na toplotno črpalko se priporoči, ko je povprečna dnevna temperatura napovedi
+            ((najvišja + najnižja) / 2) pod tem pragom. -2 °C pomeni noči okoli -6 do -8 °C.
+          default: -2
+          selector:
+            number:
+              min: -20
+              max: 10
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: box
+        climates_above:
+          name: Klime nad
+          description: >
+            Vrnitev na klime se priporoči, ko sta povprečje napovedi in (če je izbrano) povprečje
+            zadnjih dni nad tem pragom. Mora biti višji od praga za toplotno črpalko; sicer se uporabi prag + 1 K.
+          default: 4
+          selector:
+            number:
+              min: -15
+              max: 15
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: box
+        forecast_days:
+          name: Število dni napovedi
+          default: 5
+          selector:
+            number:
+              min: 2
+              max: 7
+              step: 1
+              unit_of_measurement: dni
+              mode: box
+        min_days_since_switch:
+          name: Najmanj dni po preklopu
+          description: Toliko dni po spremembi trenutnega vira ni novega priporočila.
+          default: 14
+          selector:
+            number:
+              min: 0
+              max: 90
+              step: 1
+              unit_of_measurement: dni
+              mode: box
+
+    obvestila:
+      name: Preverjanje in obvestila
+      icon: mdi:bell
+      collapsed: false
+      input:
+        check_time:
+          name: Čas dnevnega preverjanja
+          default: "17:00:00"
+          selector:
+            time: {}
+        notify_service:
+          name: Notify servis
+          description: Npr. notify.mobile_app_telefon.
+          selector:
+            text: {}
+        actionable:
+          name: Gumb "Preklopljeno" v obvestilu
+          description: Samo za aplikacijo Home Assistant (notify.mobile_app_*). Gumb nastavi trenutni vir na priporočenega.
+          default: true
+          selector:
+            boolean: {}
+
+mode: queued
+max_exceeded: silent
+
+triggers:
+  - trigger: time
+    id: daily_check
+    at: !input check_time
+  - trigger: event
+    id: switched
+    event_type: mobile_app_notification_action
+
+variables:
+  source_helper: !input source_helper
+  weather_entity: !input weather_entity
+  trend_sensor: !input trend_sensor
+  master_switch: !input master_switch
+  heat_pump_below: !input heat_pump_below
+  climates_above_input: !input climates_above
+  forecast_days: !input forecast_days
+  min_days_since_switch: !input min_days_since_switch
+  notify_service: !input notify_service
+  actionable: !input actionable
+
+  # ID gumba vsebuje helper, da se več avtomatizacij iz tega blueprinta ne meša.
+  action_heat_pump: "HSA_HEAT_PUMP_{{ source_helper }}"
+  action_climates: "HSA_CLIMATES_{{ source_helper }}"
+  notification_tag: "heating_source_advisor_{{ source_helper }}"
+
+  heat_pump_active: "{{ is_state(source_helper, 'on') }}"
+  days_since_switch: >
+    {{ ((now() - states[source_helper].last_changed).total_seconds() / 86400) | round(1)
+       if states(source_helper) in ['on', 'off'] else 0 }}
+  climates_above: "{{ [climates_above_input | float, heat_pump_below | float + 1] | max }}"
+  trend: "{{ states(trend_sensor) | float(none) if trend_sensor else none }}"
+
+conditions:
+  - condition: template
+    value_template: "{{ master_switch == '' or is_state(master_switch, 'on') }}"
+  - condition: template
+    value_template: "{{ states(source_helper) in ['on', 'off'] }}"
+
+actions:
+  - if:
+      - condition: trigger
+        id: switched
+    then:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.event.data.action == action_heat_pump }}"
+            sequence:
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: "{{ source_helper }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.event.data.action == action_climates }}"
+            sequence:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: "{{ source_helper }}"
+      - stop: Gumb v obvestilu obdelan.
+
+  - action: weather.get_forecasts
+    target:
+      entity_id: "{{ weather_entity }}"
+    data:
+      type: daily
+    response_variable: forecast
+
+  - alias: Izračun priporočila
+    variables:
+      daily_means: >
+        {% set ns = namespace(values=[]) %}
+        {% for day in (forecast[weather_entity].forecast if weather_entity in forecast else [])[:forecast_days | int] %}
+          {% if is_number(day.temperature) and is_number(day.get('templow')) %}
+            {% set ns.values = ns.values + [(day.temperature | float + day.templow | float) / 2] %}
+          {% elif is_number(day.temperature) %}
+            {% set ns.values = ns.values + [day.temperature | float] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.values }}
+      forecast_mean: "{{ (daily_means | sum / daily_means | length) | round(1) if daily_means | length > 0 else none }}"
+      recommendation: >
+        {% if forecast_mean is none or days_since_switch | float(0) < min_days_since_switch | float(0) %}
+          keep
+        {% elif not heat_pump_active and forecast_mean <= heat_pump_below | float %}
+          heat_pump
+        {% elif heat_pump_active and forecast_mean >= climates_above | float
+                and (trend is none or trend >= climates_above | float) %}
+          climates
+        {% else %}
+          keep
+        {% endif %}
+
+  - condition: template
+    value_template: "{{ recommendation | trim != 'keep' and notify_service | trim != '' }}"
+
+  - variables:
+      to_heat_pump: "{{ recommendation | trim == 'heat_pump' }}"
+      title: >-
+        {{ 'Ogrevanje: čas za toplotno črpalko' if to_heat_pump else 'Ogrevanje: čas za klime' }}
+      message: >-
+        Povprečna temperatura naslednjih {{ daily_means | length }} dni bo {{ forecast_mean }} °C{% if not to_heat_pump and trend is not none %},
+        zadnji dnevi {{ trend | round(1) }} °C{% endif %} (prag {{ heat_pump_below if to_heat_pump else climates_above }} °C).
+        {{ 'Toplotna črpalka bo grela učinkoviteje kot klime; vključi gretje radiatorjev.' if to_heat_pump
+           else 'Klime bodo grele ceneje; izklopi gretje radiatorjev.' }}
+
+  - if:
+      - condition: template
+        value_template: "{{ actionable }}"
+    then:
+      - action: "{{ notify_service | trim }}"
+        data:
+          title: "{{ title }}"
+          message: "{{ message | trim }}"
+          data:
+            tag: "{{ notification_tag }}"
+            actions:
+              - action: "{{ action_heat_pump if to_heat_pump else action_climates }}"
+                title: Preklopljeno
+    else:
+      - action: "{{ notify_service | trim }}"
+        data:
+          title: "{{ title }}"
+          message: "{{ message | trim }}"
