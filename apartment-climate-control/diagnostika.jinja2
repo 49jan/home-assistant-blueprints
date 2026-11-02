@@ -42,10 +42,22 @@
 {%- set hum_start = 65 -%}
 {%- set hum_target = 60 -%}
 {%- set dehum_during_schedule_pause = false -%}
+{%- set keep_min_temp_pause = false -%}
+{%- set min_temp_pause = 16 -%}
 
 {%- set sensor_stability_seconds = 30 -%}
 {%- set open_delay_s = 0 -%}
 {%- set close_delay_s = 0 -%}
+
+{%- set tariff_block_sensor = "" -%}
+{%- set heat_offset_block1 = -1 -%}
+{%- set preheat_sensor = "" -%}
+{%- set heat_offset_preheat = 0.5 -%}
+{%- set precool_sensor = "" -%}
+{%- set cool_offset_precool = -1 -%}
+{%- set peak_power_sensor = "" -%}
+{%- set peak_power_limit = 4 -%}
+{%- set heat_offset_peak = -1 -%}
 
 {%- set allow_manual = true -%}
 {%- set manual_hold_min = 60 -%}
@@ -139,9 +151,25 @@
 {%- set cool_outdoor_ok = not (cool_block_outdoor and outdoor_temp is not none and current_temp is not none and outdoor_temp < current_temp) -%}
 {%- set cool_limit = (outdoor_temp - cool_max_delta | float(0)) if (outdoor_temp is not none and cool_max_delta | float(0) > 0) else none -%}
 {%- set heat_limit = (outdoor_temp + heat_max_delta | float(0)) if (outdoor_temp is not none and heat_max_delta | float(0) > 0) else none -%}
-{%- set heat_target_final = ([heat_target, heat_limit] | min) if heat_limit is not none else heat_target -%}
+{%- set tariff_block = states(tariff_block_sensor) | int(0) if tariff_block_sensor else 0 -%}
+{%- set preheat_active = preheat_sensor != '' and is_state(preheat_sensor, 'on') and tariff_block != 1 -%}
+{%- set peak_power_raw = states(peak_power_sensor) | float(none) if peak_power_sensor else none -%}
+{%- set peak_power_kw = peak_power_raw / 1000 if peak_power_raw is not none and state_attr(peak_power_sensor, 'unit_of_measurement') == 'W' else peak_power_raw -%}
+{%- set peak_shed = tariff_block == 1 and peak_power_kw is not none and peak_power_kw > peak_power_limit | float(0) -%}
+{%- if tariff_block == 1 -%}
+  {%- set heat_offset = heat_offset_block1 | float(0) + (heat_offset_peak | float(0) if peak_shed else 0) -%}
+{%- elif preheat_active -%}
+  {%- set heat_offset = heat_offset_preheat | float(0) -%}
+{%- else -%}
+  {%- set heat_offset = 0 -%}
+{%- endif -%}
+{%- set heat_target_tariff = heat_target | float + heat_offset -%}
+{%- set heat_target_final = ([heat_target_tariff, heat_limit] | min) if heat_limit is not none else heat_target_tariff -%}
 {%- set cool_target_base = ([cool_target, heat_target] | max) if enable_heating else cool_target -%}
-{%- set cool_target_eff = ([cool_target_base, cool_limit] | max) if cool_limit is not none else cool_target_base -%}
+{%- set precool_active = precool_sensor != '' and is_state(precool_sensor, 'on') -%}
+{%- set cool_target_lowered = cool_target_base | float + (cool_offset_precool | float(0) if precool_active else 0) -%}
+{%- set cool_target_tariff = ([cool_target_lowered, heat_target | float] | max) if enable_heating else cool_target_lowered -%}
+{%- set cool_target_eff = ([cool_target_tariff, cool_limit] | max) if cool_limit is not none else cool_target_tariff -%}
 
 {%- set want_dehum = (enable_dehum and 'dry' in hvac_modes and not window_blocked
     and ((current_hum is none and humidity_sensors | length > 0 and actual_mode == 'dry')
@@ -150,6 +178,7 @@
 {%- if current_temp is none -%}
   {%- set thermo_mode = 'off' if actual_mode == 'dry' else actual_mode -%}
 {%- elif enable_heating and not radiators_heating and heat_outdoor_ok and 'heat' in hvac_modes
+        and (not peak_shed or actual_mode == 'heat')
         and (current_temp < heat_target_final - heat_tol or (actual_mode == 'heat' and current_temp < heat_target_final)) -%}
   {%- set thermo_mode = 'heat' -%}
 {%- elif enable_cooling and not radiators_heating and cool_outdoor_ok and 'cool' in hvac_modes
@@ -159,10 +188,24 @@
   {%- set thermo_mode = 'off' -%}
 {%- endif -%}
 
+{%- set pause_min_own = (allow_manual and actual_mode == 'heat'
+    and (state_attr(climate_entity, 'temperature') | float(0) - min_temp_pause) | abs < 0.25) -%}
+{%- set pause_min_manages = (keep_min_temp_pause and not schedule_active and not window_blocked
+    and not radiators_heating and 'heat' in hvac_modes and current_temp is not none
+    and (not allow_manual or actual_mode == 'off' or pause_min_own
+         or (dehum_during_schedule_pause and actual_mode == 'dry'))) -%}
+{%- set pause_min_heating = (pause_min_manages
+    and (current_temp < min_temp_pause
+         or (actual_mode == 'heat' and current_temp < min_temp_pause + heat_tol))) -%}
+
 {%- if window_blocked -%}
   {%- set desired_mode = 'off' -%}
 {%- elif not schedule_active -%}
   {%- if radiators_heating -%}
+    {%- set desired_mode = 'off' -%}
+  {%- elif pause_min_heating -%}
+    {%- set desired_mode = 'heat' -%}
+  {%- elif pause_min_own -%}
     {%- set desired_mode = 'off' -%}
   {%- elif allow_manual -%}
     {%- set desired_mode = actual_mode -%}
@@ -182,7 +225,8 @@
     or (schedule_active and radiators_heating and actual_mode not in ['off', 'dry'])
     or (not schedule_active and radiators_heating and actual_mode != 'off')
     or (schedule_active and not is_present and actual_mode in ['heat', 'cool'])
-    or (not schedule_active and not allow_manual and desired_mode == 'off' and actual_mode != 'off')
+    or (not schedule_active and not allow_manual and desired_mode == 'off' and actual_mode != 'off'
+        and not (pause_min_manages and actual_mode == 'heat'))
   ) -%}
 
 {%- set manual_active = (schedule_active and allow_manual and not forced and actual_mode != 'off'
@@ -218,6 +262,16 @@ enable_cooling:        {{ enable_cooling }}   cool_target: {{ cool_target }}   c
 enable_dehum:          {{ enable_dehum }}     hum_start: {{ hum_start }}       hum_target: {{ hum_target }}
 allow_manual:          {{ allow_manual }}     manual_hold_min: {{ manual_hold_min }}
 min_run:               {{ min_run }} min      min_idle: {{ min_idle }} min
+
+--- TARIFE ---
+tariff_block:          {{ tariff_block }}   preheat_active: {{ preheat_active }}
+peak_power_kw:         {{ peak_power_kw }}   (prag {{ peak_power_limit }} kW)   peak_shed: {{ peak_shed }}
+heat_offset:           {{ heat_offset }}   (ciljna temperatura gretja z zamikom: {{ heat_target_tariff }})
+precool_active:        {{ precool_active }}   (ciljna temperatura hlajenja z zamikom: {{ cool_target_tariff }})
+
+--- MINIMALNA TEMPERATURA MED PREMOROM ---
+keep_min_temp_pause:   {{ keep_min_temp_pause }}   min_temp_pause: {{ min_temp_pause }}   (izklop pri {{ min_temp_pause + heat_tol }})
+pause_min_manages:     {{ pause_min_manages }}   pause_min_own: {{ pause_min_own }}   pause_min_heating: {{ pause_min_heating }}
 
 --- IZRAČUNANE VREDNOSTI (enako kot v avtomatizaciji) ---
 heat_target_final:     {{ heat_target_final }}   (prag za vklop gretja: {{ heat_target_final - heat_tol }})

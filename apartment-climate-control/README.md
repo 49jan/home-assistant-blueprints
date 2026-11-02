@@ -6,7 +6,6 @@ Home Assistant automation for controlling one apartment climate entity from indo
 
 - [`smart-apartment-climate-control.yaml`](smart-apartment-climate-control.yaml) is an importable Home Assistant automation blueprint.
 - [`ecodan-radiatorji-template.yaml`](ecodan-radiatorji-template.yaml) is an optional Home Assistant template configuration example. It is not a blueprint.
-
 ## Smart Apartment Climate Control
 
 The blueprint applies these priorities, from highest to lowest:
@@ -16,7 +15,8 @@ The blueprint applies these priorities, from highest to lowest:
 3. During the active schedule, absence of all selected people prevents heating/cooling; dehumidification remains available.
 4. Dehumidify above the configured humidity threshold.
 5. Heat or cool around the configured targets and tolerances.
-6. Limit target temperatures using the outdoor temperature.
+6. Optionally shift targets by tariff: lower the heating target in the most expensive time block, raise it while preheating, lower it further (without starting new heating) when total power in block 1 exceeds a limit, and lower the cooling target while precooling.
+7. Limit target temperatures using the outdoor temperature.
 
 It also supports delayed window handling, optional presence checks, minimum stable sensor time, cooling start persistence, humidity aggregation selection, optional manual-control hold time, minimum compressor run and idle times, per-mode fan settings, and an optional notification action when operation is blocked.
 
@@ -61,7 +61,8 @@ To import it manually:
 - Minimum compressor run and idle times.
 - Optional preventive FAN cycle with configurable cooling interval and fan-only duration.
 - Optional fan modes and blocked-operation notification action.
-- Optional Schedule helper and an option to allow dehumidification while its schedule is inactive.
+- Optional Schedule helper, an option to allow dehumidification while its schedule is inactive, and an optional minimum temperature kept during the pause.
+- Optional tariff inputs: time-block sensor, preheat and precool binary sensors, total power sensor, and their target offsets.
 
 The input names and detailed descriptions in the blueprint are in Slovenian. By default, no people are selected, sensor stabilization is 30 seconds, cooling persistence is disabled, and the preventive FAN cycle is disabled. If sensor entities are selected but their readings have not yet remained stable long enough, those readings are temporarily ignored; the climate entity's reported value is only used when no corresponding external sensors are selected.
 
@@ -71,7 +72,11 @@ Humidity sensors are averaged by default; select **Najvišja vrednost** to start
 
 The preventive FAN cycle is configured under **Preventivni FAN cikel**. It is disabled by default; if enabled, the default is a FAN pause after 120 minutes of uninterrupted automatic cooling, lasting 10 minutes. The interval can be set from 30 to 360 minutes and the pause from 2 to 30 minutes. It only applies to automatic cooling, and all schedule, presence, window, radiator, and temperature conditions are checked again before cooling resumes.
 
+An optional minimum temperature can be kept during a schedule pause. Enable **Vzdržuj minimalno temperaturo med premorom urnika** and set **Minimalna temperatura med premorom** (default 16 °C, 5-24 °C). While the schedule is inactive and the room is below the minimum, the blueprint switches the climate entity to `heat` with the minimum as target and turns it off again at the minimum plus the heating tolerance. It is disabled by default, so existing behavior is unchanged. An open window, active radiator heating, the master switch and the minimum compressor run and idle times still take precedence; presence does not block it, so an empty apartment is still protected. It is a protective floor, not a comfort setting: tariff offsets (block 1, preheat, peak-power limit) are not applied, so the minimum is neither lowered nor raised by the tariff. With manual control allowed, a climate entity that was started manually is left alone; only a heating run that holds the minimum setpoint set by the automation is managed and turned off. It takes precedence over dehumidification during the pause while the room is below the minimum.
+
 When using a Schedule helper, select it in **Urnik delovanja**. The helper's active periods are the periods when the automation manages the climate. Outside those periods the climate is turned off at the schedule transition. Later manual changes are left untouched only if **Dovoli ročno upravljanje z daljincem** is enabled; otherwise, a manual turn-on is switched off again, except when the separate dehumidification option calls for `dry`. An open window or active radiator-heating sensor always forces the climate off during the pause. Normal automation resumes immediately when the schedule becomes active. If **Dovoli razvlaževanje med premorom urnika** is enabled, the blueprint may use `dry` while humidity is above the configured threshold, but not while radiator heating is active; it turns `dry` off again at the target humidity.
+
+The tariff inputs are under **Tarife in časovni bloki** and are all optional; without them the heating target is unchanged. The time-block sensor's state must be the current block number (1 = most expensive). In block 1 the heating target is shifted by **Zamik ciljne temperature gretja v bloku 1** (default −1 K), so heating starts later and stops earlier. While the preheat sensor is on outside block 1, the target is raised by the preheat offset (default +0.5 K). If a total power sensor (W or kW) is selected and its value stays above the limit for one minute during block 1, the target is lowered by an additional offset and no new heating is started; units already heating continue at the lower target. While the precool sensor is on, the cooling target is lowered by the precool offset (default −1 K), but never below the heating target and never below the outdoor-based cooling limit. With **Ne hladi, ko je zunaj hladneje kot znotraj** enabled, precooling only runs on warm nights, when ventilation cannot cool the apartment. Setpoints are rounded to the climate entity's `target_temp_step`. With manual control allowed, the blueprint updates the setpoint of a running heater only while it still holds one of the values the automation sets; a different value set with the remote is left alone.
 
 ### Updating
 
@@ -94,6 +99,25 @@ Before using it:
 5. Select the resulting binary sensor, normally `binary_sensor.ecodan_gretje_radiatorjev`, under the blueprint's radiator-heating sensors.
 
 The alternative pump and three-way-valve template in the file is only a fallback example and must be adapted and verified before use.
+
+## Tariff Sensors
+
+The blueprint does not contain any country-specific tariff schedule. Create the sensors with Home Assistant templates:
+
+- **Time-block sensor:** a `sensor` whose state is the number of the current network-tariff block, where `1` is the most expensive block. Any other number means no block-1 offset.
+- **Preheat sensor:** a `binary_sensor` that is on when the apartment should store heat before an expensive period, for example 1.5 hours before block 1 on working days.
+- **Precool sensor:** a `binary_sensor` that is on during cheap, cool hours before a hot day, for example the last hours of the night tariff.
+
+A minimal time-block sensor for a schedule with an expensive block on working days at 7–14 and 16–20 h:
+
+```yaml
+- sensor:
+    - name: "Tariff block"
+      state: >
+        {% set h = now().hour %}
+        {{ 1 if is_state('binary_sensor.workday_sensor', 'on')
+              and (7 <= h < 14 or 16 <= h < 20) else 2 }}
+```
 
 ## Troubleshooting
 

@@ -8,7 +8,8 @@ blueprint:
     2. Radiatorji grejejo (toplotna črpalka) -> med aktivnim urnikom gretje in hlajenje nista dovoljena, razvlaževanje pa je dovoljeno; med premorom urnika radiatorji izklopijo klimo v vseh načinih.
     3. Previsoka vlaga -> razvlaževanje do ciljne vlage, nato se klima vrne v stanje, ki ga določa termostat (izklop, gretje, hlajenje).
     4. Termostat: gretje/hlajenje s ciljno temperaturo in dopustnim odstopanjem (mrtva cona).
-    5. Zaščita pred preobremenitvijo: ciljna temperatura hlajenja je omejena glede na zunanjo temperaturo (velja tudi za ročno nastavitev).
+    5. Tarifni zamik (neobvezno): v najdražjem časovnem bloku se ciljna temperatura gretja zniža, med predgrevanjem zviša; ob preseženi skupni moči v bloku 1 se zniža še dodatno in novo gretje se ne začne. Med predhlajanjem se zniža ciljna temperatura hlajenja.
+    6. Zaščita pred preobremenitvijo: ciljna temperatura hlajenja je omejena glede na zunanjo temperaturo (velja tudi za ročno nastavitev).
 
     **Opombe:**
     - Temperaturni senzorji se povprečijo; vlaga se lahko povpreči ali uporabi najvišja vrednost.
@@ -18,6 +19,7 @@ blueprint:
     - Če zunanjih senzorjev ni, se uporabijo vrednosti, ki ju poroča klima, kadar so na voljo.
     - Ko se razvlaževanje konča, avtomatizacija stanje na novo izračuna (ne obnavlja posnetka).
     - Signal "radiatorji grejejo" naj bo binary_sensor (glej priloženi template z zakasnitvijo izklopa).
+    - Senzorje časovnega bloka, predgrevanja in predhlajanja pripraviš s template senzorji (glej README).
   domain: automation
   homeassistant:
     min_version: 2024.10.0
@@ -461,7 +463,7 @@ blueprint:
           description: >
             Izberi Schedule helper. Ko urnik preide na neaktiven, avtomatizacija izklopi klimo,
             nato med premorom ročne nastavitve spoštuje samo, če je dovoljeno ročno upravljanje.
-            Izjema je razvlaževanje, če je posebej dovoljeno spodaj. Prazno = urnik ni uporabljen.
+            Izjema sta razvlaževanje, če je posebej dovoljeno spodaj, in vzdrževanje minimalne temperature. Prazno = urnik ni uporabljen.
           default: ""
           selector:
             entity:
@@ -472,6 +474,123 @@ blueprint:
           default: false
           selector:
             boolean: {}
+        keep_min_temp_pause:
+          name: Vzdržuj minimalno temperaturo med premorom urnika
+          description: >
+            Ko je urnik neaktiven in je notranja temperatura pod minimalno, klima gretje vklopi s ciljem
+            = minimalna temperatura in ga izklopi pri minimalni + toleranca gretja. Okno, radiatorji,
+            glavno stikalo in minimalni časi kompresorja ga blokirajo; prisotnost ne. Tarifnih zamikov
+            ne uporablja. Ročno vklopljene klime ne spreminja, če je ročno upravljanje dovoljeno.
+          default: false
+          selector:
+            boolean: {}
+        min_temp_pause:
+          name: Minimalna temperatura med premorom
+          default: 16
+          selector:
+            number:
+              min: 5
+              max: 24
+              step: 0.5
+              unit_of_measurement: "°C"
+              mode: box
+
+    tarife:
+      name: Tarife in časovni bloki (neobvezno)
+      icon: mdi:cash-clock
+      collapsed: true
+      input:
+        tariff_block_sensor:
+          name: Senzor časovnega bloka omrežnine
+          description: >
+            sensor, katerega stanje je številka trenutnega časovnega bloka (1 = najdražji).
+            V bloku 1 se ciljna temperatura gretja zamakne. Prazno = brez tarifnih zamikov.
+          default: ""
+          selector:
+            entity:
+              domain: sensor
+        heat_offset_block1:
+          name: Zamik ciljne temperature gretja v bloku 1
+          description: Gretje se v bloku 1 vklopi kasneje in izklopi prej; toplotna masa stanovanja premosti ta čas.
+          default: -1
+          selector:
+            number:
+              min: -5
+              max: 0
+              step: 0.5
+              unit_of_measurement: "K"
+              mode: box
+        preheat_sensor:
+          name: Senzor predgrevanja
+          description: >
+            binary_sensor, ki je vklopljen, ko naj klima predgreva (npr. pred blokom 1).
+            V bloku 1 se ne upošteva. Prazno = brez predgrevanja.
+          default: ""
+          selector:
+            entity:
+              domain: binary_sensor
+        heat_offset_preheat:
+          name: Zamik ciljne temperature gretja med predgrevanjem
+          default: 0.5
+          selector:
+            number:
+              min: 0
+              max: 3
+              step: 0.5
+              unit_of_measurement: "K"
+              mode: box
+        precool_sensor:
+          name: Senzor predhlajanja
+          description: >
+            binary_sensor, ki je vklopljen, ko naj klima predhladi (npr. ob koncu cenejše nočne
+            tarife pred vročim dnem). Ciljna temperatura hlajenja ne pade pod ciljno temperaturo
+            gretja. Prazno = brez predhlajanja.
+          default: ""
+          selector:
+            entity:
+              domain: binary_sensor
+        cool_offset_precool:
+          name: Zamik ciljne temperature hlajenja med predhlajanjem
+          default: -1
+          selector:
+            number:
+              min: -3
+              max: 0
+              step: 0.5
+              unit_of_measurement: "K"
+              mode: box
+        peak_power_sensor:
+          name: Skupna moč stanovanja
+          description: >
+            sensor moči (W ali kW) na glavnem dovodu. Če v bloku 1 moč preseže prag,
+            se ciljna temperatura gretja dodatno zniža in novo gretje se ne začne.
+            Potrebuje tudi senzor časovnega bloka. Prazno = brez omejevanja konice.
+          default: ""
+          selector:
+            entity:
+              domain: sensor
+              device_class: power
+        peak_power_limit:
+          name: Prag skupne moči v bloku 1
+          description: Nastavi malo pod obračunsko moč bloka 1 z računa za elektriko.
+          default: 4
+          selector:
+            number:
+              min: 0.5
+              max: 43
+              step: 0.1
+              unit_of_measurement: kW
+              mode: box
+        heat_offset_peak:
+          name: Dodatni zamik ob preseženi moči
+          default: -1
+          selector:
+            number:
+              min: -5
+              max: 0
+              step: 0.5
+              unit_of_measurement: "K"
+              mode: box
 
 mode: single
 max_exceeded: silent
@@ -506,6 +625,12 @@ trigger_variables:
   master_switch_for_trigger: !input master_switch
   manual_control_for_trigger: !input allow_manual
   manual_hold_for_trigger: !input manual_hold_minutes
+  tariff_block_sensor_for_trigger: !input tariff_block_sensor
+  preheat_sensor_for_trigger: !input preheat_sensor
+  precool_sensor_for_trigger: !input precool_sensor
+  cool_offset_precool_for_trigger: !input cool_offset_precool
+  peak_power_sensor_for_trigger: !input peak_power_sensor
+  peak_power_limit_for_trigger: !input peak_power_limit
 
 triggers:
   - trigger: template
@@ -549,6 +674,10 @@ triggers:
       {% set humidity_allows_cooling = not dehumidification_enabled_for_trigger or (not humidity_reading_pending and (current_humidity is none or (current_humidity < humidity_start_for_trigger | float(0) and (states(climate_entity_for_trigger) != 'dry' or current_humidity <= humidity_target_for_trigger | float(0))))) %}
       {% set outdoor_temperature = states(outside_sensor_for_trigger) | float(none) if outside_sensor_for_trigger else none %}
       {% set target_base = [cool_target_for_trigger, heat_target_for_trigger] | max if heating_enabled_for_trigger else cool_target_for_trigger %}
+      {% if precool_sensor_for_trigger != '' and is_state(precool_sensor_for_trigger, 'on') %}
+        {% set target_base = target_base | float + cool_offset_precool_for_trigger | float(0) %}
+        {% set target_base = [target_base, heat_target_for_trigger | float] | max if heating_enabled_for_trigger else target_base %}
+      {% endif %}
       {% set target_limit = (outdoor_temperature - cool_max_delta_for_trigger | float(0)) if outdoor_temperature is not none and cool_max_delta_for_trigger | float(0) > 0 else none %}
       {% set target = [target_base, target_limit] | max if target_limit is not none else target_base %}
       {% set ns = namespace(present=person_entities_for_trigger | length == 0, blocked=false) %}
@@ -624,6 +753,34 @@ triggers:
     entity_id: !input window_sensors
     to: "off"
     for: !input window_close_delay
+  # Tarifni prehodi: vsak trigger se sproži ob vstopu v svoje stanje (znižano, zvišano, normalno).
+  - trigger: template
+    id: tariff_heat_lowered
+    value_template: "{{ tariff_block_sensor_for_trigger != '' and states(tariff_block_sensor_for_trigger) | int(0) == 1 }}"
+  - trigger: template
+    id: tariff_heat_raised
+    value_template: >-
+      {{ preheat_sensor_for_trigger != '' and is_state(preheat_sensor_for_trigger, 'on')
+         and (tariff_block_sensor_for_trigger == '' or states(tariff_block_sensor_for_trigger) | int(0) != 1) }}
+  - trigger: template
+    id: tariff_cool_precool
+    value_template: "{{ precool_sensor_for_trigger != '' and is_state(precool_sensor_for_trigger, 'on') }}"
+  - trigger: template
+    id: tariff_heat_normal
+    value_template: >-
+      {{ (tariff_block_sensor_for_trigger != '' or preheat_sensor_for_trigger != '' or precool_sensor_for_trigger != '')
+         and (tariff_block_sensor_for_trigger == '' or states(tariff_block_sensor_for_trigger) | int(0) != 1)
+         and (preheat_sensor_for_trigger == '' or not is_state(preheat_sensor_for_trigger, 'on'))
+         and (precool_sensor_for_trigger == '' or not is_state(precool_sensor_for_trigger, 'on')) }}
+  - trigger: template
+    id: peak_power_exceeded
+    value_template: >-
+      {% set power = states(peak_power_sensor_for_trigger) | float(none) if peak_power_sensor_for_trigger else none %}
+      {% set power_kw = power / 1000 if power is not none and state_attr(peak_power_sensor_for_trigger, 'unit_of_measurement') == 'W' else power %}
+      {{ tariff_block_sensor_for_trigger != '' and states(tariff_block_sensor_for_trigger) | int(0) == 1
+         and power_kw is not none and power_kw > peak_power_limit_for_trigger | float(0) }}
+    for:
+      minutes: 1
   - trigger: time_pattern
     minutes: "/5"
   - trigger: homeassistant
@@ -670,6 +827,17 @@ variables:
   fan_cycle_duration_minutes: !input fan_cycle_duration_minutes
   schedule_entity: !input schedule_entity
   dehum_during_schedule_pause: !input dehum_during_schedule_pause
+  keep_min_temp_pause: !input keep_min_temp_pause
+  min_temp_pause: !input min_temp_pause
+  tariff_block_sensor: !input tariff_block_sensor
+  heat_offset_block1: !input heat_offset_block1
+  preheat_sensor: !input preheat_sensor
+  heat_offset_preheat: !input heat_offset_preheat
+  precool_sensor: !input precool_sensor
+  cool_offset_precool: !input cool_offset_precool
+  peak_power_sensor: !input peak_power_sensor
+  peak_power_limit: !input peak_power_limit
+  heat_offset_peak: !input heat_offset_peak
 
   open_delay_s: >
     {{ open_delay.hours | int(0) * 3600 + open_delay.minutes | int(0) * 60 + open_delay.seconds | int(0) }}
@@ -764,6 +932,23 @@ variables:
       {{ ns.present }}
     {% endif %}
 
+  tariff_block: "{{ states(tariff_block_sensor) | int(0) if tariff_block_sensor else 0 }}"
+  preheat_active: "{{ preheat_sensor != '' and is_state(preheat_sensor, 'on') and tariff_block != 1 }}"
+  peak_power_kw: >
+    {% set power = states(peak_power_sensor) | float(none) if peak_power_sensor else none %}
+    {{ power / 1000 if power is not none and state_attr(peak_power_sensor, 'unit_of_measurement') == 'W' else power }}
+  peak_shed: "{{ tariff_block == 1 and peak_power_kw is not none and peak_power_kw > peak_power_limit | float(0) }}"
+  heat_offset: >
+    {% if tariff_block == 1 %}
+      {{ heat_offset_block1 | float(0) + (heat_offset_peak | float(0) if peak_shed else 0) }}
+    {% elif preheat_active %}
+      {{ heat_offset_preheat | float(0) }}
+    {% else %}
+      0
+    {% endif %}
+  precool_active: "{{ precool_sensor != '' and is_state(precool_sensor, 'on') }}"
+  temp_step: "{{ [state_attr(climate_entity, 'target_temp_step') | float(0.5), 0.1] | max }}"
+
   heat_outdoor_ok: "{{ outdoor_temp is none or outdoor_temp >= heat_min_outdoor }}"
   cool_outdoor_ok: >
     {{ not (cool_block_outdoor and outdoor_temp is not none and current_temp is not none and outdoor_temp < current_temp) }}
@@ -771,9 +956,13 @@ variables:
     {{ (outdoor_temp - cool_max_delta | float(0)) if (outdoor_temp is not none and cool_max_delta | float(0) > 0) else none }}
   heat_limit: >
     {{ (outdoor_temp + heat_max_delta | float(0)) if (outdoor_temp is not none and heat_max_delta | float(0) > 0) else none }}
-  heat_target_final: "{{ [heat_target, heat_limit] | min if heat_limit is not none else heat_target }}"
+  heat_target_tariff: "{{ heat_target | float + heat_offset | float(0) }}"
+  heat_target_final: "{{ [heat_target_tariff, heat_limit] | min if heat_limit is not none else heat_target_tariff }}"
   cool_target_base: "{{ [cool_target, heat_target] | max if enable_heating else cool_target }}"
-  cool_target_eff: "{{ [cool_target_base, cool_limit] | max if cool_limit is not none else cool_target_base }}"
+  cool_target_tariff: >
+    {% set lowered = cool_target_base | float + (cool_offset_precool | float(0) if precool_active else 0) %}
+    {{ [lowered, heat_target | float] | max if enable_heating else lowered }}
+  cool_target_eff: "{{ [cool_target_tariff, cool_limit] | max if cool_limit is not none else cool_target_tariff }}"
 
   want_dehum: >
      {{ enable_dehum and 'dry' in hvac_modes and not window_blocked
@@ -788,6 +977,7 @@ variables:
     {% if current_temp is none %}
       {{ 'off' if actual_mode == 'dry' else actual_mode }}
     {% elif enable_heating and not radiators_heating and heat_outdoor_ok and 'heat' in hvac_modes
+            and (not peak_shed or actual_mode == 'heat')
             and (current_temp < heat_target_final - heat_tol or (actual_mode == 'heat' and current_temp < heat_target_final)) %}
       heat
     {% elif enable_cooling and not radiators_heating and cool_outdoor_ok and 'cool' in hvac_modes
@@ -797,13 +987,30 @@ variables:
       off
     {% endif %}
 
+  # Minimalna temperatura med premorom urnika. Avtomatizacija jo upravlja, kadar je klima izklopljena,
+  # kadar že greje na minimalno temperaturo (njena nastavitev) ali kadar ročno upravljanje ni dovoljeno.
+  pause_min_own: >
+    {{ allow_manual and actual_mode == 'heat'
+       and (state_attr(climate_entity, 'temperature') | float(0) - min_temp_pause | float(0)) | abs < 0.25 }}
+  pause_min_manages: >
+    {{ keep_min_temp_pause and not schedule_active and not window_blocked and not radiators_heating
+       and 'heat' in hvac_modes and current_temp is not none
+       and (not allow_manual or actual_mode == 'off' or pause_min_own
+            or (dehum_during_schedule_pause and actual_mode == 'dry')) }}
+  pause_min_heating: >
+    {{ pause_min_manages
+       and (current_temp < min_temp_pause | float(0)
+            or (actual_mode == 'heat' and current_temp < min_temp_pause | float(0) + heat_tol | float(0))) }}
+
   desired_mode: >
     {% if window_blocked %}
       off
     {% elif not schedule_active %}
       {% if radiators_heating %}off
+      {% elif pause_min_heating %}heat
       {% elif want_dehum_during_pause %}dry
       {% elif dehum_during_schedule_pause and actual_mode == 'dry' and current_hum is not none and current_hum <= hum_target %}off
+      {% elif pause_min_own %}off
       {% elif allow_manual %}{{ actual_mode }}
       {% else %}off{% endif %}
     {% elif want_dehum %}
@@ -819,7 +1026,8 @@ variables:
        or (schedule_active and radiators_heating and actual_mode not in ['off', 'dry'])
        or (not schedule_active and radiators_heating and actual_mode != 'off')
       or (schedule_active and not is_present and actual_mode in ['heat', 'cool'])
-       or (not schedule_active and not allow_manual and desired_mode == 'off' and actual_mode != 'off') }}
+       or (not schedule_active and not allow_manual and desired_mode == 'off' and actual_mode != 'off'
+           and not (pause_min_manages and actual_mode == 'heat')) }}
   block_reason: "{{ 'okno' if window_blocked else 'radiatorji' }}"
 
   # Ročni VKLOP (heat/cool/dry/fan_only) sproži čakanje (manual_hold_minutes).
@@ -833,7 +1041,10 @@ variables:
   change_allowed: >
     {{ forced or state_age_min >= (min_idle if actual_mode == 'off' else min_run) | float(0) }}
 
-  setpoint: "{{ heat_target_final if desired_mode == 'heat' else cool_target_eff }}"
+  # Zaokroženo na korak klime, da naprave s korakom 1 °C ne povzročajo ponavljajočih se nastavitev.
+  setpoint: >
+    {% set raw = min_temp_pause if pause_min_heating else heat_target_final if desired_mode == 'heat' else cool_target_eff %}
+    {{ ((raw | float / temp_step) | round(0) * temp_step) | round(1) }}
   fan_for_mode: >
     {{ fan_heat if desired_mode == 'heat' else fan_cool if desired_mode == 'cool' else fan_dry if desired_mode == 'dry' else '' }}
 
@@ -975,10 +1186,24 @@ actions:
         conditions:
           - condition: trigger
             id: schedule_inactive
+          - condition: template
+            value_template: "{{ not pause_min_heating }}"
         sequence:
           - action: climate.turn_off
             target:
               entity_id: "{{ climate_entity }}"
+      - alias: Minimalna temperatura med premorom - ciljna temperatura
+        conditions:
+          - condition: template
+            value_template: "{{ pause_min_heating and actual_mode == 'heat' }}"
+          - condition: template
+            value_template: "{{ (state_attr(climate_entity, 'temperature') | float(0) - setpoint | float(0)) | abs >= 0.25 }}"
+        sequence:
+          - action: climate.set_temperature
+            target:
+              entity_id: "{{ climate_entity }}"
+            data:
+              temperature: "{{ setpoint }}"
       - alias: Sprememba načina klime
         conditions:
           - condition: template
@@ -1065,6 +1290,47 @@ actions:
                   entity_id: "{{ climate_entity }}"
                 data:
                   fan_mode: "{{ fan_for_mode }}"
+      # Pri dovoljenem ročnem upravljanju se ciljna temperatura posodobi samo, če je na klimi
+      # ena od vrednosti, ki jih nastavlja ta avtomatizacija; vrednost z daljinca ostane.
+      - alias: Uveljavi tarifno ciljno temperaturo gretja/hlajenja (ročna nastavitev ostane)
+        conditions:
+          - condition: template
+            value_template: "{{ schedule_active and allow_manual }}"
+          - condition: template
+            value_template: "{{ tariff_block_sensor != '' or preheat_sensor != '' or precool_sensor != '' }}"
+          - condition: template
+            value_template: "{{ actual_mode == desired_mode and desired_mode in ['heat', 'cool'] }}"
+          - condition: template
+            value_template: >-
+              {% set current = state_attr(climate_entity, 'temperature') | float(none) %}
+              {% set ns = namespace(known=false) %}
+              {% if desired_mode == 'heat' %}
+                {% for offset in [0, heat_offset_block1 | float(0), heat_offset_block1 | float(0) + heat_offset_peak | float(0), heat_offset_preheat | float(0)] %}
+                  {% set raw = heat_target | float + offset %}
+                  {% set limited = [raw, heat_limit] | min if heat_limit is not none else raw %}
+                  {% set candidate = ((limited / temp_step) | round(0) * temp_step) | round(1) %}
+                  {% if current is not none and (current - candidate) | abs < 0.25 %}
+                    {% set ns.known = true %}
+                  {% endif %}
+                {% endfor %}
+              {% else %}
+                {% for offset in [0, cool_offset_precool | float(0)] %}
+                  {% set raw = cool_target_base | float + offset %}
+                  {% set raw = [raw, heat_target | float] | max if enable_heating else raw %}
+                  {% set limited = [raw, cool_limit] | max if cool_limit is not none else raw %}
+                  {% set candidate = ((limited / temp_step) | round(0) * temp_step) | round(1) %}
+                  {% if current is not none and (current - candidate) | abs < 0.25 %}
+                    {% set ns.known = true %}
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
+              {{ current is not none and ns.known and (current - setpoint | float(0)) | abs >= 0.25 }}
+        sequence:
+          - action: climate.set_temperature
+            target:
+              entity_id: "{{ climate_entity }}"
+            data:
+              temperature: "{{ setpoint }}"
       - alias: Zaščita - omejitev ciljne temperature glede na zunanjo (velja tudi za ročno nastavitev)
         conditions:
           - condition: template
