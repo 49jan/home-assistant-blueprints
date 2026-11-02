@@ -9,14 +9,14 @@ Once a day at **Čas dnevnega preverjanja** (default 17:00), the blueprint reads
 1. **Switch to the heat pump** when the current source is the climate units and the forecast average is at or below **Toplotna črpalka pod** (default −2 °C, nights around −6 to −8 °C). The forecast alone is enough, so the notification arrives before the cold period.
 2. **Switch back to the climate units** when the current source is the heat pump and the forecast average is at or above **Klime nad** (default +4 °C). If a trend sensor is selected, the average of the last days must also be above this threshold, so a short thaw does not trigger the switch. If this threshold is not higher than the heat-pump threshold, the heat-pump threshold + 1 K is used.
 
-No new recommendation is made for **Najmanj dni po preklopu** days (default 14) after the current source changes. While a recommendation applies and the source has not been switched, the notification is repeated once per day and replaces the previous one on the phone.
+No new recommendation is made for **Najmanj dni po preklopu** days (default 14) after the state of the current-source sensor last changed. While a recommendation applies and the source has not been switched, the notification action runs once per day.
 
 ## Requirements
 
 - Home Assistant 2024.10.0 or newer.
-- An `input_boolean` helper for the current heating source, for example `input_boolean.ogrevanje_s_tc`: **on** = heat pump (radiators), **off** = climate units. Create it under **Settings > Devices & services > Helpers > Toggle** and set it to the source you use now.
+- A `binary_sensor` that shows the current heating source: **on** = heating with the heat pump (radiators), **off** = heating with the climate units. Use an existing sensor, or create a template or helper binary sensor that follows your decision, for example from the heat-pump circuit.
 - A weather entity that provides a daily forecast.
-- A notify action, for example `notify.mobile_app_phone`.
+- An action for the notification (**Dejanje ob priporočilu**), for example a notify service call.
 
 ### Optional Trend Sensor
 
@@ -28,9 +28,29 @@ Create a **Statistics** helper under **Settings > Devices & services > Helpers**
 
 Select it as **Povprečje zunanje temperature zadnjih dni**.
 
-### Notification Button
+### Notification Action
 
-With **Gumb "Preklopljeno" v obvestilu** enabled (default), the notification contains a **Preklopljeno** button. Pressing it sets the helper to the recommended source, which also starts the waiting period. The button only works with the Home Assistant companion app (`notify.mobile_app_*`); disable the option for other notify services. Without the button, change the helper manually after switching.
+**Dejanje ob priporočilu** is a standard Home Assistant action selector, so any action can be added (notify service, persistent notification, TTS, and so on). These variables are available in the action:
+
+| Variable | Content |
+|---|---|
+| `recommendation` | `heat_pump` or `climates` |
+| `title` | Short title, for example "Ogrevanje: čas za toplotno črpalko" |
+| `message` | Ready-made text with the forecast average, trend and threshold |
+| `forecast_mean` | Average daily forecast temperature in °C |
+| `trend` | Average of the last days in °C, or empty when no trend sensor is selected |
+| `daily_means` | List of average daily temperatures used for the forecast |
+
+Example action:
+
+```yaml
+action: notify.mobile_app_phone
+data:
+  title: "{{ title }}"
+  message: "{{ message }}"
+```
+
+The blueprint cannot change the source sensor. After switching, the sensor state has to change by itself for the waiting period to start.
 
 ## Import
 
@@ -42,7 +62,7 @@ https://raw.githubusercontent.com/49jan/home-assistant-blueprints/main/heating-s
 
 ## Notes
 
-- Restarting Home Assistant may reset the helper's last-changed time. This only extends the waiting period.
+- Restarting Home Assistant may reset the sensor's last-changed time. This only extends the waiting period.
 - When using Smart Apartment Climate Control, consider setting its `heat_min_outdoor` near the night temperatures that correspond to **Toplotna črpalka pod**, so the climate units do not heat in deep cold.
 - The input names and descriptions in the blueprint are in Slovenian.
 
