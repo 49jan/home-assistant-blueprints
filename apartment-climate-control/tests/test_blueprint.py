@@ -174,7 +174,8 @@ class BlueprintHarness:
         try:
             return float(scalar)
         except ValueError:
-            return rendered
+            # Home Assistant strips whitespace from rendered template results.
+            return scalar
 
     def render_variables(self) -> dict[str, Any]:
         variables: dict[str, Any] = {}
@@ -188,6 +189,9 @@ class BlueprintHarness:
         return variables
 
     def render_cooling_persistence_trigger(self) -> Any:
+        return self.render_trigger("cooling_persistence_elapsed")
+
+    def render_trigger(self, trigger_id: str) -> Any:
         trigger_variables: dict[str, Any] = {}
         for name, value in self.automation.get("trigger_variables", {}).items():
             if isinstance(value, InputReference):
@@ -199,7 +203,7 @@ class BlueprintHarness:
         trigger = next(
             item
             for item in self.automation["triggers"]
-            if item.get("id") == "cooling_persistence_elapsed"
+            if item.get("id") == trigger_id
         )
         return self.render(trigger["value_template"], trigger_variables)
 
@@ -854,6 +858,476 @@ class BlueprintTests(unittest.TestCase):
         self.assertFalse(
             harness.render(resume_condition["value_template"], harness.render_variables())
         )
+
+    TARIFF_INPUTS = {
+        "tariff_block_sensor": "sensor.block",
+        "preheat_sensor": "binary_sensor.preheat",
+        "peak_power_sensor": "sensor.power",
+        "heat_target": 21,
+        "heat_tolerance": 0.5,
+    }
+
+    def tariff_entities(
+        self,
+        climate_mode: str = "heat",
+        *,
+        block: str = "3",
+        preheat: str = "off",
+        power: str = "1000",
+        power_unit: str = "W",
+        current_temperature: float = 20.8,
+        climate_setpoint: float = 21.0,
+        temp_step: float | None = None,
+    ) -> dict[str, EntityState]:
+        entities = base_entities(climate_mode)
+        attributes = entities["climate.test"].attributes
+        attributes["current_temperature"] = current_temperature
+        attributes["temperature"] = climate_setpoint
+        if temp_step is not None:
+            attributes["target_temp_step"] = temp_step
+        entities["sensor.block"] = make_entity(block)
+        entities["binary_sensor.preheat"] = make_entity(preheat)
+        entities["sensor.power"] = make_entity(
+            power, attributes={"unit_of_measurement": power_unit}
+        )
+        return entities
+
+    def tariff_setpoint_branch(self) -> dict[str, Any]:
+        branches = self.automation["actions"][0]["choose"]
+        return next(
+            branch
+            for branch in branches
+            if branch.get("alias")
+            == "Uveljavi tarifno ciljno temperaturo gretja/hlajenja (ročna nastavitev ostane)"
+        )
+
+    def render_branch_conditions(self, branch: dict[str, Any], harness: BlueprintHarness) -> bool:
+        variables = harness.render_variables()
+        return all(
+            harness.render(condition["value_template"], variables)
+            for condition in branch["conditions"]
+        )
+
+    def test_without_tariff_inputs_heat_target_is_unchanged(self) -> None:
+        variables = self.harness({"heat_target": 21}).render_variables()
+        self.assertEqual(variables["tariff_block"], 0)
+        self.assertEqual(variables["heat_target_final"], 21.0)
+        self.assertFalse(variables["peak_shed"])
+
+    def test_block_1_lowers_heat_target(self) -> None:
+        cold = self.harness(
+            self.TARIFF_INPUTS, self.tariff_entities(block="1", current_temperature=19.0)
+        ).render_variables()
+        self.assertEqual(cold["heat_target_final"], 20.0)
+        self.assertEqual(cold["setpoint"], 20.0)
+        # 20.8 °C would keep heating toward 21 °C, but the lowered target stops it.
+        warm = self.harness(
+            self.TARIFF_INPUTS, self.tariff_entities(block="1", current_temperature=20.8)
+        ).render_variables()
+        self.assertEqual(warm["desired_mode"], "off")
+
+    def test_preheat_raises_heat_target_outside_block_1(self) -> None:
+        harness = self.harness(self.TARIFF_INPUTS, self.tariff_entities(block="2", preheat="on"))
+        self.assertEqual(harness.render_variables()["heat_target_final"], 21.5)
+
+    def test_preheat_is_ignored_in_block_1(self) -> None:
+        harness = self.harness(self.TARIFF_INPUTS, self.tariff_entities(block="1", preheat="on"))
+        variables = harness.render_variables()
+        self.assertFalse(variables["preheat_active"])
+        self.assertEqual(variables["heat_target_final"], 20.0)
+
+    def test_heat_limit_still_caps_tariff_target(self) -> None:
+        entities = self.tariff_entities(block="2", preheat="on")
+        entities["sensor.outdoor"] = make_entity("0")
+        harness = self.harness(
+            {**self.TARIFF_INPUTS, "outdoor_sensor": "sensor.outdoor", "heat_max_delta": 21},
+            entities,
+        )
+        self.assertEqual(harness.render_variables()["heat_target_final"], 21.0)
+
+    def test_peak_shed_converts_watts_and_kilowatts(self) -> None:
+        watts = self.harness(
+            self.TARIFF_INPUTS, self.tariff_entities(block="1", power="4500", power_unit="W")
+        ).render_variables()
+        kilowatts = self.harness(
+            self.TARIFF_INPUTS, self.tariff_entities(block="1", power="4.5", power_unit="kW")
+        ).render_variables()
+        below = self.harness(
+            self.TARIFF_INPUTS, self.tariff_entities(block="1", power="3500", power_unit="W")
+        ).render_variables()
+        self.assertTrue(watts["peak_shed"])
+        self.assertTrue(kilowatts["peak_shed"])
+        self.assertFalse(below["peak_shed"])
+        self.assertEqual(watts["heat_target_final"], 19.0)
+
+    def test_peak_shed_only_applies_in_block_1(self) -> None:
+        variables = self.harness(
+            self.TARIFF_INPUTS, self.tariff_entities(block="2", power="9000")
+        ).render_variables()
+        self.assertFalse(variables["peak_shed"])
+        self.assertEqual(variables["heat_target_final"], 21.0)
+
+    def test_peak_shed_does_not_start_heating_but_keeps_running_unit(self) -> None:
+        idle = self.harness(
+            self.TARIFF_INPUTS,
+            self.tariff_entities("off", block="1", power="6000", current_temperature=17.0),
+        ).render_variables()
+        running = self.harness(
+            self.TARIFF_INPUTS,
+            self.tariff_entities("heat", block="1", power="6000", current_temperature=17.0),
+        ).render_variables()
+        self.assertEqual(idle["desired_mode"].strip(), "off")
+        self.assertEqual(running["desired_mode"].strip(), "heat")
+
+    def test_tariff_setpoint_branch_updates_automation_setpoint(self) -> None:
+        harness = self.harness(
+            {**self.TARIFF_INPUTS, "allow_manual": True},
+            self.tariff_entities(block="1", current_temperature=19.0, climate_setpoint=21.0),
+        )
+        self.assertTrue(self.render_branch_conditions(self.tariff_setpoint_branch(), harness))
+
+    def test_tariff_setpoint_branch_keeps_manual_setpoint(self) -> None:
+        harness = self.harness(
+            {**self.TARIFF_INPUTS, "allow_manual": True},
+            self.tariff_entities(block="1", current_temperature=19.0, climate_setpoint=23.0),
+        )
+        self.assertFalse(self.render_branch_conditions(self.tariff_setpoint_branch(), harness))
+
+    def test_tariff_setpoint_branch_is_idle_when_setpoint_matches(self) -> None:
+        harness = self.harness(
+            {**self.TARIFF_INPUTS, "allow_manual": True},
+            self.tariff_entities(block="1", current_temperature=19.0, climate_setpoint=20.0),
+        )
+        self.assertFalse(self.render_branch_conditions(self.tariff_setpoint_branch(), harness))
+
+    def test_setpoint_is_rounded_to_climate_step(self) -> None:
+        harness = self.harness(
+            self.TARIFF_INPUTS,
+            self.tariff_entities(
+                block="2", preheat="on", current_temperature=20.0, climate_setpoint=22.0, temp_step=1
+            ),
+        )
+        variables = harness.render_variables()
+        self.assertEqual(variables["heat_target_final"], 21.5)
+        self.assertEqual(variables["setpoint"], 22.0)
+        # 22 is the rounded preheat setpoint, so the branch must not loop on it.
+        self.assertFalse(self.render_branch_conditions(self.tariff_setpoint_branch(), harness))
+
+    def test_tariff_triggers_fire_on_each_transition(self) -> None:
+        cases = {
+            ("1", "off"): "tariff_heat_lowered",
+            ("2", "on"): "tariff_heat_raised",
+            ("3", "off"): "tariff_heat_normal",
+        }
+        trigger_ids = {"tariff_heat_lowered", "tariff_heat_raised", "tariff_heat_normal"}
+        for (block, preheat), expected in cases.items():
+            harness = self.harness(
+                self.TARIFF_INPUTS, self.tariff_entities(block=block, preheat=preheat)
+            )
+            fired = {trigger_id for trigger_id in trigger_ids if harness.render_trigger(trigger_id)}
+            self.assertEqual(fired, {expected}, (block, preheat))
+
+    def test_tariff_triggers_are_inactive_without_tariff_inputs(self) -> None:
+        harness = self.harness()
+        for trigger_id in (
+            "tariff_heat_lowered",
+            "tariff_heat_raised",
+            "tariff_heat_normal",
+            "peak_power_exceeded",
+        ):
+            self.assertFalse(harness.render_trigger(trigger_id), trigger_id)
+
+    def test_peak_power_trigger_requires_block_1(self) -> None:
+        in_block_1 = self.harness(
+            self.TARIFF_INPUTS, self.tariff_entities(block="1", power="5000")
+        )
+        in_block_2 = self.harness(
+            self.TARIFF_INPUTS, self.tariff_entities(block="2", power="5000")
+        )
+        self.assertTrue(in_block_1.render_trigger("peak_power_exceeded"))
+        self.assertFalse(in_block_2.render_trigger("peak_power_exceeded"))
+
+    PRECOOL_INPUTS = {
+        "precool_sensor": "binary_sensor.precool",
+        "cool_target": 25,
+        "cool_tolerance": 0.5,
+        "heat_target": 21,
+    }
+
+    def precool_entities(
+        self,
+        climate_mode: str = "cool",
+        *,
+        precool: str = "on",
+        current_temperature: float = 25.0,
+        climate_setpoint: float = 25.0,
+    ) -> dict[str, EntityState]:
+        entities = base_entities(climate_mode)
+        attributes = entities["climate.test"].attributes
+        attributes["current_temperature"] = current_temperature
+        attributes["temperature"] = climate_setpoint
+        entities["binary_sensor.precool"] = make_entity(precool)
+        return entities
+
+    def test_precool_lowers_cool_target(self) -> None:
+        variables = self.harness(
+            self.PRECOOL_INPUTS, self.precool_entities(current_temperature=25.0)
+        ).render_variables()
+        self.assertTrue(variables["precool_active"])
+        self.assertEqual(variables["cool_target_eff"], 24.0)
+        self.assertEqual(variables["desired_mode"], "cool")
+        self.assertEqual(variables["setpoint"], 24.0)
+
+    def test_precool_off_keeps_cool_target(self) -> None:
+        variables = self.harness(
+            self.PRECOOL_INPUTS, self.precool_entities(precool="off")
+        ).render_variables()
+        self.assertEqual(variables["cool_target_eff"], 25.0)
+
+    def test_precool_never_goes_below_heat_target(self) -> None:
+        variables = self.harness(
+            {**self.PRECOOL_INPUTS, "cool_target": 22, "cool_offset_precool": -3},
+            self.precool_entities(current_temperature=23.0),
+        ).render_variables()
+        self.assertEqual(variables["cool_target_eff"], 21.0)
+
+    def test_outdoor_cool_limit_still_caps_precool(self) -> None:
+        entities = self.precool_entities(current_temperature=27.0)
+        entities["sensor.outdoor"] = make_entity("33")
+        variables = self.harness(
+            {**self.PRECOOL_INPUTS, "outdoor_sensor": "sensor.outdoor", "cool_max_delta": 8},
+            entities,
+        ).render_variables()
+        self.assertEqual(variables["cool_target_eff"], 25.0)
+
+    def test_tariff_setpoint_branch_updates_precool_setpoint(self) -> None:
+        harness = self.harness(
+            {**self.PRECOOL_INPUTS, "allow_manual": True},
+            self.precool_entities(current_temperature=25.0, climate_setpoint=25.0),
+        )
+        self.assertTrue(self.render_branch_conditions(self.tariff_setpoint_branch(), harness))
+
+    def test_tariff_setpoint_branch_keeps_manual_cool_setpoint(self) -> None:
+        harness = self.harness(
+            {**self.PRECOOL_INPUTS, "allow_manual": True},
+            self.precool_entities(current_temperature=25.0, climate_setpoint=22.0),
+        )
+        self.assertFalse(self.render_branch_conditions(self.tariff_setpoint_branch(), harness))
+
+    def test_precool_triggers_fire_on_transitions(self) -> None:
+        on = self.harness(self.PRECOOL_INPUTS, self.precool_entities(precool="on"))
+        off = self.harness(self.PRECOOL_INPUTS, self.precool_entities(precool="off"))
+        self.assertTrue(on.render_trigger("tariff_cool_precool"))
+        self.assertFalse(on.render_trigger("tariff_heat_normal"))
+        self.assertFalse(off.render_trigger("tariff_cool_precool"))
+        self.assertTrue(off.render_trigger("tariff_heat_normal"))
+
+    def test_cooling_persistence_trigger_uses_precool_target(self) -> None:
+        entities = self.precool_entities("off", current_temperature=25.0)
+        harness = self.harness(
+            {**self.PRECOOL_INPUTS, "cooling_persistence_minutes": 10}, entities
+        )
+        self.assertTrue(harness.render_cooling_persistence_trigger())
+        entities["binary_sensor.precool"] = make_entity("off")
+        self.assertFalse(harness.render_cooling_persistence_trigger())
+
+
+    PAUSE_INPUTS = {
+        "schedule_entity": "schedule.climate",
+        "keep_min_temp_pause": True,
+        "min_temp_pause": 16,
+        "allow_manual": False,
+        "heat_target": 21,
+        "heat_tolerance": 0.5,
+    }
+
+    def pause_entities(
+        self,
+        climate_mode: str = "off",
+        *,
+        temperature: float = 14.0,
+        setpoint: float = 21.0,
+        schedule: str = "off",
+        age_seconds: int = 3600,
+    ) -> dict[str, EntityState]:
+        entities = base_entities(climate_mode)
+        entities["climate.test"] = make_entity(
+            climate_mode,
+            age_seconds=age_seconds,
+            attributes={
+                **entities["climate.test"].attributes,
+                "current_temperature": temperature,
+                "temperature": setpoint,
+            },
+        )
+        entities["schedule.climate"] = make_entity(schedule)
+        return entities
+
+    def pause_branch(self, alias: str) -> dict[str, Any]:
+        branches = self.automation["actions"][0]["choose"]
+        return next(branch for branch in branches if branch.get("alias") == alias)
+
+    def test_pause_minimum_is_off_by_default(self) -> None:
+        inputs = {**self.PAUSE_INPUTS, "keep_min_temp_pause": False}
+        variables = self.harness(inputs, self.pause_entities()).render_variables()
+        self.assertFalse(variables["pause_min_heating"])
+        self.assertEqual(variables["desired_mode"].strip(), "off")
+
+    def test_pause_below_minimum_starts_heating_at_minimum(self) -> None:
+        variables = self.harness(self.PAUSE_INPUTS, self.pause_entities()).render_variables()
+        self.assertEqual(variables["desired_mode"].strip(), "heat")
+        self.assertEqual(variables["setpoint"], 16.0)
+
+    def test_pause_heating_stops_at_minimum_plus_tolerance(self) -> None:
+        running = self.harness(
+            self.PAUSE_INPUTS, self.pause_entities("heat", temperature=16.4, setpoint=16.0)
+        ).render_variables()
+        self.assertEqual(running["desired_mode"].strip(), "heat")
+        done = self.harness(
+            self.PAUSE_INPUTS, self.pause_entities("heat", temperature=16.5, setpoint=16.0)
+        ).render_variables()
+        self.assertEqual(done["desired_mode"].strip(), "off")
+        self.assertFalse(done["forced"])
+
+    def test_pause_above_minimum_stays_off(self) -> None:
+        variables = self.harness(
+            self.PAUSE_INPUTS, self.pause_entities(temperature=16.0)
+        ).render_variables()
+        self.assertEqual(variables["desired_mode"].strip(), "off")
+
+    def test_pause_minimum_is_blocked_by_window_and_radiators(self) -> None:
+        entities = self.pause_entities()
+        entities["binary_sensor.window"] = make_entity("on", age_seconds=600)
+        window = self.harness(
+            {**self.PAUSE_INPUTS, "window_sensors": ["binary_sensor.window"]}, entities
+        ).render_variables()
+        self.assertEqual(window["desired_mode"].strip(), "off")
+        entities = self.pause_entities()
+        entities["binary_sensor.radiators"] = make_entity("on")
+        radiators = self.harness(
+            {**self.PAUSE_INPUTS, "heating_sensors": ["binary_sensor.radiators"]}, entities
+        ).render_variables()
+        self.assertEqual(radiators["desired_mode"].strip(), "off")
+        entities = self.pause_entities("heat", setpoint=16.0)
+        entities["binary_sensor.radiators"] = make_entity("on")
+        running = self.harness(
+            {**self.PAUSE_INPUTS, "heating_sensors": ["binary_sensor.radiators"]}, entities
+        ).render_variables()
+        self.assertEqual(running["desired_mode"].strip(), "off")
+        self.assertTrue(running["forced"])
+
+    def test_pause_minimum_respects_master_switch(self) -> None:
+        entities = self.pause_entities()
+        entities["input_boolean.master"] = make_entity("off")
+        harness = self.harness(
+            {**self.PAUSE_INPUTS, "master_switch": "input_boolean.master"}, entities
+        )
+        condition = self.master_switch_condition()
+        self.assertFalse(harness.render(condition["value_template"], harness.render_variables()))
+
+    def test_pause_minimum_respects_compressor_times(self) -> None:
+        inputs = {**self.PAUSE_INPUTS, "min_idle_minutes": 5, "min_run_minutes": 10}
+        idle = self.harness(inputs, self.pause_entities(age_seconds=60)).render_variables()
+        self.assertEqual(idle["desired_mode"].strip(), "heat")
+        self.assertFalse(idle["change_allowed"])
+        running = self.harness(
+            inputs, self.pause_entities("heat", temperature=17.0, setpoint=16.0, age_seconds=120)
+        ).render_variables()
+        self.assertEqual(running["desired_mode"].strip(), "off")
+        self.assertFalse(running["forced"])
+        self.assertFalse(running["change_allowed"])
+
+    def test_pause_minimum_ignores_absence(self) -> None:
+        entities = self.pause_entities()
+        entities["person.guest"] = make_entity("not_home")
+        variables = self.harness(
+            {**self.PAUSE_INPUTS, "person_entities": ["person.guest"]},
+            entities,
+            {"person.guest": 50},
+        ).render_variables()
+        self.assertEqual(variables["desired_mode"].strip(), "heat")
+
+    def test_pause_minimum_keeps_manual_mode_when_manual_control_allowed(self) -> None:
+        inputs = {**self.PAUSE_INPUTS, "allow_manual": True}
+        manual_cool = self.harness(inputs, self.pause_entities("cool")).render_variables()
+        self.assertEqual(manual_cool["desired_mode"].strip(), "cool")
+        manual_heat = self.harness(
+            inputs, self.pause_entities("heat", temperature=14.0, setpoint=22.0)
+        ).render_variables()
+        self.assertFalse(manual_heat["pause_min_heating"])
+        self.assertEqual(manual_heat["desired_mode"].strip(), "heat")
+        manual_heat_warm = self.harness(
+            inputs, self.pause_entities("heat", temperature=20.0, setpoint=22.0)
+        ).render_variables()
+        self.assertEqual(manual_heat_warm["desired_mode"].strip(), "heat")
+        own_heat_done = self.harness(
+            inputs, self.pause_entities("heat", temperature=17.0, setpoint=16.0)
+        ).render_variables()
+        self.assertEqual(own_heat_done["desired_mode"].strip(), "off")
+        started = self.harness(inputs, self.pause_entities("off")).render_variables()
+        self.assertEqual(started["desired_mode"].strip(), "heat")
+
+    def test_pause_minimum_does_not_override_dehumidification_when_warm(self) -> None:
+        entities = self.pause_entities("dry", temperature=20.0)
+        entities["sensor.humidity"] = make_entity("80", age_seconds=60)
+        variables = self.harness(
+            {
+                **self.PAUSE_INPUTS,
+                "humidity_sensors": ["sensor.humidity"],
+                "dehum_during_schedule_pause": True,
+            },
+            entities,
+        ).render_variables()
+        self.assertEqual(variables["desired_mode"].strip(), "dry")
+
+    def test_active_schedule_ignores_pause_minimum(self) -> None:
+        cold = self.harness(
+            self.PAUSE_INPUTS, self.pause_entities(schedule="on", temperature=19.0)
+        ).render_variables()
+        self.assertFalse(cold["pause_min_heating"])
+        self.assertEqual(cold["desired_mode"].strip(), "heat")
+        self.assertEqual(cold["setpoint"], 21.0)
+        warm = self.harness(
+            self.PAUSE_INPUTS, self.pause_entities(schedule="on", temperature=20.8)
+        ).render_variables()
+        self.assertEqual(warm["desired_mode"].strip(), "off")
+
+    def test_pause_minimum_is_not_changed_by_tariff(self) -> None:
+        entities = self.tariff_entities("off", block="1", current_temperature=14.0)
+        entities["schedule.climate"] = make_entity("off")
+        entities["sensor.power"] = make_entity("9000", attributes={"unit_of_measurement": "W"})
+        inputs = {**self.TARIFF_INPUTS, **self.PAUSE_INPUTS, "peak_power_limit": 4}
+        variables = self.harness(inputs, entities).render_variables()
+        self.assertTrue(variables["peak_shed"])
+        self.assertEqual(variables["desired_mode"].strip(), "heat")
+        self.assertEqual(variables["setpoint"], 16.0)
+        entities = self.tariff_entities("off", block="2", preheat="on", current_temperature=14.0)
+        entities["schedule.climate"] = make_entity("off")
+        preheat = self.harness(inputs, entities).render_variables()
+        self.assertEqual(preheat["setpoint"], 16.0)
+
+    def test_pause_minimum_setpoint_and_turn_off_branches(self) -> None:
+        setpoint_branch = self.pause_branch(
+            "Minimalna temperatura med premorom - ciljna temperatura"
+        )
+        wrong = self.harness(
+            self.PAUSE_INPUTS, self.pause_entities("heat", temperature=14.0, setpoint=21.0)
+        )
+        self.assertTrue(self.render_branch_conditions(setpoint_branch, wrong))
+        right = self.harness(
+            self.PAUSE_INPUTS, self.pause_entities("heat", temperature=14.0, setpoint=16.0)
+        )
+        self.assertFalse(self.render_branch_conditions(setpoint_branch, right))
+        off_branch = self.pause_branch("Izklopi klimo ob koncu aktivnega urnika")
+        turn_off = off_branch["conditions"][1]
+        cold = self.harness(
+            self.PAUSE_INPUTS, self.pause_entities("heat", temperature=14.0, setpoint=21.0)
+        )
+        self.assertFalse(cold.render(turn_off["value_template"], cold.render_variables()))
+        warm = self.harness(
+            self.PAUSE_INPUTS, self.pause_entities("heat", temperature=19.0, setpoint=21.0)
+        )
+        self.assertTrue(warm.render(turn_off["value_template"], warm.render_variables()))
 
 
 if __name__ == "__main__":
