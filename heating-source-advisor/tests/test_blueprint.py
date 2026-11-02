@@ -17,7 +17,7 @@ BLUEPRINT_PATH = (
     REPOSITORY_ROOT / "heating-source-advisor" / "heating-source-advisor.yaml"
 )
 FIXED_NOW = datetime(2026, 12, 1, 17, 0, tzinfo=timezone.utc)
-HELPER = "input_boolean.ogrevanje_s_tc"
+SOURCE = "binary_sensor.ogrevanje_s_tc"
 WEATHER = "weather.home"
 TREND = "sensor.zunanja_temperatura_3_dni"
 
@@ -121,9 +121,8 @@ class BlueprintHarness:
         }
         self.inputs.update(
             {
-                "source_helper": HELPER,
+                "source_sensor": SOURCE,
                 "weather_entity": WEATHER,
-                "notify_service": "notify.mobile_app_telefon",
             }
         )
         self.inputs.update(input_overrides or {})
@@ -195,14 +194,14 @@ class HeatingSourceAdvisorTests(unittest.TestCase):
     def evaluate(
         self,
         forecast: dict[str, Any],
-        helper_state: str = "off",
+        source_state: str = "off",
         days_since_switch: float = 60,
         trend: str | None = None,
         inputs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         entities = {
-            HELPER: EntityState(
-                helper_state, FIXED_NOW - timedelta(days=days_since_switch)
+            SOURCE: EntityState(
+                source_state, FIXED_NOW - timedelta(days=days_since_switch)
             )
         }
         overrides = dict(inputs or {})
@@ -248,7 +247,7 @@ class HeatingSourceAdvisorTests(unittest.TestCase):
     def test_warm_forecast_and_trend_on_heat_pump_recommend_climates(self) -> None:
         result = self.evaluate(
             daily_forecast((8, 0), (9, 1), (7, 2), (10, 3), (9, 1)),
-            helper_state="on",
+            source_state="on",
             trend="4.6",
         )
         self.assertEqual(result["recommendation"], "climates")
@@ -258,14 +257,14 @@ class HeatingSourceAdvisorTests(unittest.TestCase):
     def test_cold_trend_blocks_return_to_climates(self) -> None:
         result = self.evaluate(
             daily_forecast((8, 0), (9, 1), (7, 2), (10, 3), (9, 1)),
-            helper_state="on",
+            source_state="on",
             trend="-1.0",
         )
         self.assertEqual(result["recommendation"], "keep")
 
     def test_return_to_climates_without_trend_sensor_uses_forecast(self) -> None:
         result = self.evaluate(
-            daily_forecast((8, 0), (9, 1), (7, 2), (10, 3), (9, 1)), helper_state="on"
+            daily_forecast((8, 0), (9, 1), (7, 2), (10, 3), (9, 1)), source_state="on"
         )
         self.assertIsNone(result["trend"])
         self.assertEqual(result["recommendation"], "climates")
@@ -273,7 +272,7 @@ class HeatingSourceAdvisorTests(unittest.TestCase):
     def test_recent_switch_blocks_recommendation(self) -> None:
         result = self.evaluate(
             daily_forecast((8, 0), (9, 1), (7, 2), (10, 3), (9, 1)),
-            helper_state="on",
+            source_state="on",
             days_since_switch=5,
         )
         self.assertEqual(result["recommendation"], "keep")
@@ -295,10 +294,25 @@ class HeatingSourceAdvisorTests(unittest.TestCase):
         )
         self.assertEqual(result["climates_above"], -2.0)
 
-    def test_notification_button_ids_include_helper(self) -> None:
-        result = self.evaluate(daily_forecast((0, -2)))
-        self.assertEqual(result["action_heat_pump"], f"HSA_HEAT_PUMP_{HELPER}")
-        self.assertEqual(result["action_climates"], f"HSA_CLIMATES_{HELPER}")
+    def test_notify_action_input_runs_only_when_recommended(self) -> None:
+        step = self.document["actions"][-1]
+        self.assertEqual(step["then"], InputReference("notify_action"))
+        harness = BlueprintHarness(
+            self.document, {SOURCE: EntityState("off", FIXED_NOW - timedelta(days=60))}
+        )
+        condition = step["if"][0]["value_template"]
+        cold = harness.evaluate(daily_forecast((-2, -10)))
+        mild = harness.evaluate(daily_forecast((8, 2)))
+        self.assertTrue(harness.render(condition, cold))
+        self.assertFalse(harness.render(condition, mild))
+
+    def test_source_sensor_is_binary_sensor(self) -> None:
+        definition = flatten_inputs(self.document["blueprint"]["input"])["source_sensor"]
+        self.assertEqual(definition["selector"]["entity"]["domain"], "binary_sensor")
+        self.assertEqual(
+            flatten_inputs(self.document["blueprint"]["input"])["notify_action"]["selector"],
+            {"action": {}},
+        )
 
 
 if __name__ == "__main__":

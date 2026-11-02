@@ -10,9 +10,10 @@ blueprint:
     2. Ogrevaš s toplotno črpalko, napoved in povprečje zadnjih dni pa sta nad pragom -> "preklopi na klime".
 
     **Opombe:**
-    - Trenutni vir določa input_boolean (vklopljen = toplotna črpalka). Prestavi ga ob preklopu ali z gumbom v obvestilu.
-    - Po preklopu nastavljeno število dni ni novega priporočila, zato se vir ne menja pogosto.
-    - Dokler priporočilo velja in ne preklopiš, se obvestilo ponovi enkrat dnevno.
+    - Trenutni vir določa binary_sensor (vklopljen = toplotna črpalka, izklopljen = klime).
+    - Po spremembi stanja senzorja nastavljeno število dni ni novega priporočila, zato se vir ne menja pogosto.
+    - Dokler priporočilo velja in vira ne preklopiš, se dejanje obvestila ponovi enkrat dnevno.
+    - V dejanju obvestila so na voljo spremenljivke: recommendation (heat_pump ali climates), title, message, forecast_mean, trend in daily_means.
   domain: automation
   homeassistant:
     min_version: 2024.10.0
@@ -23,12 +24,14 @@ blueprint:
       icon: mdi:heat-pump
       collapsed: false
       input:
-        source_helper:
+        source_sensor:
           name: Trenutni vir ogrevanja
-          description: input_boolean; vklopljen = toplotna črpalka (radiatorji), izklopljen = klime.
+          description: >
+            binary_sensor; vklopljen = ogrevanje s toplotno črpalko (radiatorji), izklopljen = ogrevanje s klimami.
+            Če se sprememba stanja ne zgodi ob preklopu vira, zaporo po preklopu določa čas zadnje spremembe senzorja.
           selector:
             entity:
-              domain: input_boolean
+              domain: binary_sensor
         weather_entity:
           name: Vremenska napoved
           description: Vremenska entiteta z dnevno napovedjo.
@@ -116,31 +119,24 @@ blueprint:
           default: "17:00:00"
           selector:
             time: {}
-        notify_service:
-          name: Notify servis
-          description: Npr. notify.mobile_app_telefon.
+        notify_action:
+          name: Dejanje ob priporočilu
+          description: >
+            Zažene se, ko je priporočen preklop vira ogrevanja. Na voljo so spremenljivke
+            recommendation ("heat_pump" ali "climates"), title, message, forecast_mean, trend in daily_means.
+          default: []
           selector:
-            text: {}
-        actionable:
-          name: Gumb "Preklopljeno" v obvestilu
-          description: Samo za aplikacijo Home Assistant (notify.mobile_app_*). Gumb nastavi trenutni vir na priporočenega.
-          default: true
-          selector:
-            boolean: {}
+            action: {}
 
-mode: queued
+mode: single
 max_exceeded: silent
 
 triggers:
   - trigger: time
-    id: daily_check
     at: !input check_time
-  - trigger: event
-    id: switched
-    event_type: mobile_app_notification_action
 
 variables:
-  source_helper: !input source_helper
+  source_sensor: !input source_sensor
   weather_entity: !input weather_entity
   trend_sensor: !input trend_sensor
   master_switch: !input master_switch
@@ -148,18 +144,11 @@ variables:
   climates_above_input: !input climates_above
   forecast_days: !input forecast_days
   min_days_since_switch: !input min_days_since_switch
-  notify_service: !input notify_service
-  actionable: !input actionable
 
-  # ID gumba vsebuje helper, da se več avtomatizacij iz tega blueprinta ne meša.
-  action_heat_pump: "HSA_HEAT_PUMP_{{ source_helper }}"
-  action_climates: "HSA_CLIMATES_{{ source_helper }}"
-  notification_tag: "heating_source_advisor_{{ source_helper }}"
-
-  heat_pump_active: "{{ is_state(source_helper, 'on') }}"
+  heat_pump_active: "{{ is_state(source_sensor, 'on') }}"
   days_since_switch: >
-    {{ ((now() - states[source_helper].last_changed).total_seconds() / 86400) | round(1)
-       if states(source_helper) in ['on', 'off'] else 0 }}
+    {{ ((now() - states[source_sensor].last_changed).total_seconds() / 86400) | round(1)
+       if states(source_sensor) in ['on', 'off'] else 0 }}
   climates_above: "{{ [climates_above_input | float, heat_pump_below | float + 1] | max }}"
   trend: "{{ states(trend_sensor) | float(none) if trend_sensor else none }}"
 
@@ -167,30 +156,9 @@ conditions:
   - condition: template
     value_template: "{{ master_switch == '' or is_state(master_switch, 'on') }}"
   - condition: template
-    value_template: "{{ states(source_helper) in ['on', 'off'] }}"
+    value_template: "{{ states(source_sensor) in ['on', 'off'] }}"
 
 actions:
-  - if:
-      - condition: trigger
-        id: switched
-    then:
-      - choose:
-          - conditions:
-              - condition: template
-                value_template: "{{ trigger.event.data.action == action_heat_pump }}"
-            sequence:
-              - action: input_boolean.turn_on
-                target:
-                  entity_id: "{{ source_helper }}"
-          - conditions:
-              - condition: template
-                value_template: "{{ trigger.event.data.action == action_climates }}"
-            sequence:
-              - action: input_boolean.turn_off
-                target:
-                  entity_id: "{{ source_helper }}"
-      - stop: Gumb v obvestilu obdelan.
-
   - action: weather.get_forecasts
     target:
       entity_id: "{{ weather_entity }}"
@@ -223,9 +191,6 @@ actions:
           keep
         {% endif %}
 
-  - condition: template
-    value_template: "{{ recommendation | trim != 'keep' and notify_service | trim != '' }}"
-
   - variables:
       to_heat_pump: "{{ recommendation | trim == 'heat_pump' }}"
       title: >-
@@ -238,19 +203,5 @@ actions:
 
   - if:
       - condition: template
-        value_template: "{{ actionable }}"
-    then:
-      - action: "{{ notify_service | trim }}"
-        data:
-          title: "{{ title }}"
-          message: "{{ message | trim }}"
-          data:
-            tag: "{{ notification_tag }}"
-            actions:
-              - action: "{{ action_heat_pump if to_heat_pump else action_climates }}"
-                title: Preklopljeno
-    else:
-      - action: "{{ notify_service | trim }}"
-        data:
-          title: "{{ title }}"
-          message: "{{ message | trim }}"
+        value_template: "{{ recommendation | trim != 'keep' }}"
+    then: !input notify_action
