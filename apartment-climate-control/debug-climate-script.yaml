@@ -1,0 +1,239 @@
+# Diagnostična skripta za Smart Apartment Climate Control.
+# Uporaba: Nastavitve -> Avtomatizacije in prizori -> Skripte -> Dodaj skripto -> ⋮ -> Uredi v YAML -> prilepi.
+# Spodaj v "variables" nastavi ISTE vrednosti kot v avtomatizaciji, nato zaženi skripto.
+# Rezultat: obvestilo (zvonec v stranski vrstici) + zapis v Dnevnik (logbook/system log).
+alias: Debug - Klima avtomatizacija
+description: Izpiše vse entitete in izračunane vrednosti, ki jih uporablja blueprint.
+mode: single
+sequence:
+  - variables:
+      # ======== NASTAVI (enako kot v avtomatizaciji) ========
+      climate_entity: climate.CHANGE_ME
+      automation_entity: automation.CHANGE_ME   # sama avtomatizacija (za last_triggered / on-off)
+      person_entities: []
+      presence_distance_km: 10
+      master_switch: ""
+      temp_sensors: []
+      humidity_sensors: []
+      humidity_aggregation: average   # average | maximum
+      window_sensors: []
+      heating_sensors: []
+      outdoor_sensor: ""
+      schedule_entity: ""
+      tariff_block_sensor: ""
+      preheat_sensor: ""
+      precool_sensor: ""
+      peak_power_sensor: ""
+      enable_heating: true
+      heat_target: 21
+      heat_tol: 0.5
+      enable_cooling: true
+      cool_target: 25
+      cool_tol: 0.5
+      cool_max_delta: 8
+      heat_max_delta: 0
+      heat_min_outdoor: -15
+      cool_block_outdoor: false
+      sensor_stability_seconds: 30
+      enable_dehum: true
+      hum_start: 65
+      hum_target: 55
+      open_delay_s: 60
+      close_delay_s: 120
+      unavailable_blocks: false
+      heating_hold_min: 180
+      allow_manual: true
+      manual_hold_min: 60
+      min_run: 5
+      min_idle: 5
+      cooling_persistence_minutes: 0
+      # ======== KONEC NASTAVITEV ========
+
+  - variables:
+      actual_mode: "{{ states(climate_entity) }}"
+      schedule_active: "{{ schedule_entity == '' or is_state(schedule_entity, 'on') }}"
+      hvac_modes: "{{ state_attr(climate_entity, 'hvac_modes') or [] }}"
+      state_age_min: "{{ ((now() - states[climate_entity].last_changed).total_seconds() / 60) | round(1) }}"
+      parent_id: "{{ states[climate_entity].context.parent_id }}"
+      current_temp: >
+        {% set ns = namespace(values=[]) %}
+        {% for s in expand(temp_sensors) %}
+          {% if is_number(s.state) and (sensor_stability_seconds | int(0) == 0 or (now() - s.last_changed).total_seconds() >= sensor_stability_seconds | float(0)) %}
+            {% set ns.values = ns.values + [s.state | float] %}
+          {% endif %}
+        {% endfor %}
+        {% set v = ns.values %}
+        {% if temp_sensors | length == 0 %}
+          {{ state_attr(climate_entity, 'current_temperature') | float(none) }}
+        {% elif v | length > 0 %}
+          {{ (v | sum / v | length) | round(2) }}
+        {% else %}
+          {{ none }}
+        {% endif %}
+      current_hum: >
+        {% set ns = namespace(values=[]) %}
+        {% for s in expand(humidity_sensors) %}
+          {% if is_number(s.state) and (sensor_stability_seconds | int(0) == 0 or (now() - s.last_changed).total_seconds() >= sensor_stability_seconds | float(0)) %}
+            {% set ns.values = ns.values + [s.state | float] %}
+          {% endif %}
+        {% endfor %}
+        {% set v = ns.values %}
+        {% if v | length == 0 %}
+          {% if humidity_sensors | length == 0 %}
+            {{ state_attr(climate_entity, 'current_humidity') | float(none) }}
+          {% else %}
+            {{ none }}
+          {% endif %}
+        {% elif humidity_aggregation == 'maximum' %}
+          {{ v | max | round(1) }}
+        {% else %}
+          {{ (v | sum / v | length) | round(1) }}
+        {% endif %}
+      outdoor_temp: "{{ states(outdoor_sensor) | float(none) if outdoor_sensor else none }}"
+      window_open_delayed: >
+        {% set ns = namespace(r=false) %}
+        {% for w in expand(window_sensors) %}
+          {% if w.state == 'on' and (now() - w.last_changed).total_seconds() >= open_delay_s | int(0) %}{% set ns.r = true %}{% endif %}
+        {% endfor %}
+        {{ ns.r }}
+      window_recently_closed: >
+        {% set ns = namespace(r=false) %}
+        {% for w in expand(window_sensors) %}
+          {% if w.state == 'off' and (now() - w.last_changed).total_seconds() < close_delay_s | int(0) %}{% set ns.r = true %}{% endif %}
+        {% endfor %}
+        {{ ns.r }}
+      radiators_heating: >
+        {% set ns = namespace(r=false) %}
+        {% for h in expand(heating_sensors) %}
+          {% if h.state == 'on' or (unavailable_blocks and h.state in ['unavailable', 'unknown'])
+                or (h.state == 'off' and heating_hold_min | float(0) > 0 and (now() - h.last_changed).total_seconds() < heating_hold_min | float(0) * 60) %}{% set ns.r = true %}{% endif %}
+        {% endfor %}
+        {{ ns.r }}
+      is_present: >
+        {% if person_entities | length == 0 %}
+          true
+        {% else %}
+          {% set ns = namespace(present=false) %}
+          {% for p in person_entities %}
+            {% if is_state(p, 'home') %}
+              {% set ns.present = true %}
+            {% else %}
+              {% set d = distance(p) %}
+              {% if d is not none and d | float <= presence_distance_km | float %}{% set ns.present = true %}{% endif %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.present }}
+        {% endif %}
+      tariff_block: "{{ states(tariff_block_sensor) | int(0) if tariff_block_sensor else 0 }}"
+      precool_active: "{{ precool_sensor != '' and is_state(precool_sensor, 'on') }}"
+  - variables:
+      window_blocked: "{{ window_open_delayed or (window_recently_closed and actual_mode == 'off') }}"
+      cool_outdoor_ok: "{{ not (cool_block_outdoor and outdoor_temp is not none and current_temp is not none and outdoor_temp < current_temp) }}"
+      heat_outdoor_ok: "{{ outdoor_temp is none or outdoor_temp >= heat_min_outdoor }}"
+      cool_limit: "{{ (outdoor_temp - cool_max_delta | float(0)) if (outdoor_temp is not none and cool_max_delta | float(0) > 0) else none }}"
+      heat_limit: "{{ (outdoor_temp + heat_max_delta | float(0)) if (outdoor_temp is not none and heat_max_delta | float(0) > 0) else none }}"
+      cool_target_base: "{{ [cool_target, heat_target] | max if enable_heating else cool_target }}"
+  - variables:
+      cool_target_eff: "{{ [cool_target_base, cool_limit] | max if cool_limit is not none else cool_target_base }}"
+      heat_target_final: "{{ [heat_target, heat_limit] | min if heat_limit is not none else heat_target }}"
+      want_dehum: >
+        {{ enable_dehum and 'dry' in hvac_modes and not window_blocked
+           and ((current_hum is none and humidity_sensors | length > 0 and actual_mode == 'dry')
+              or (current_hum is not none and (current_hum >= hum_start or (actual_mode == 'dry' and current_hum > hum_target)))) }}
+  - variables:
+      thermo_mode: >
+        {% if current_temp is none %}
+          {{ 'off' if actual_mode == 'dry' else actual_mode }}
+        {% elif enable_heating and not radiators_heating and heat_outdoor_ok and 'heat' in hvac_modes
+                and (current_temp < heat_target_final - heat_tol or (actual_mode == 'heat' and current_temp < heat_target_final)) %}
+          heat
+        {% elif enable_cooling and not radiators_heating and cool_outdoor_ok and 'cool' in hvac_modes
+                and (current_temp > cool_target_eff + cool_tol or (actual_mode == 'cool' and current_temp > cool_target_eff)) %}
+          cool
+        {% else %}
+          off
+        {% endif %}
+  - variables:
+      desired_mode: >
+        {% if window_blocked %}off
+        {% elif not schedule_active %}{{ 'off' if radiators_heating else (actual_mode if allow_manual else 'off') }}
+        {% elif want_dehum %}dry
+        {% elif not is_present %}off
+        {% else %}{{ thermo_mode | trim }}
+        {% endif %}
+  - variables:
+      desired_mode: "{{ desired_mode | trim }}"
+  - variables:
+      forced: >
+        {{ (window_blocked and actual_mode != 'off')
+           or (schedule_active and radiators_heating and actual_mode not in ['off', 'dry'])
+           or (not schedule_active and radiators_heating and actual_mode != 'off')
+           or (schedule_active and not is_present and actual_mode in ['heat', 'cool']) }}
+  - variables:
+      manual_active: >
+        {{ schedule_active and allow_manual and not forced and actual_mode != 'off'
+           and actual_mode != desired_mode
+           and state_age_min | float(0) < manual_hold_min | float(60)
+           and parent_id is none }}
+      change_allowed: "{{ forced or state_age_min | float(0) >= (min_idle if actual_mode == 'off' else min_run) | float(0) }}"
+  - variables:
+      would_change: >
+        {{ desired_mode != actual_mode and not manual_active and change_allowed
+           and (desired_mode == 'off' or desired_mode in hvac_modes)
+           and (desired_mode != 'cool' or actual_mode == 'cool' or cooling_persistence_minutes | int(0) == 0) }}
+
+  # ---------- Izpis ----------
+  - variables:
+      report: >
+        {% set all_entities = [climate_entity, automation_entity, master_switch, schedule_entity, outdoor_sensor,
+                               tariff_block_sensor, preheat_sensor, precool_sensor, peak_power_sensor]
+                              + person_entities + temp_sensors + humidity_sensors + window_sensors + heating_sensors %}
+        === AVTOMATIZACIJA ===
+        {{ automation_entity }}: {{ states(automation_entity) }} | last_triggered: {{ state_attr(automation_entity, 'last_triggered') }} | current: {{ state_attr(automation_entity, 'current') }}
+
+        === VSE ENTITETE (state | last_changed pred X s) ===
+        {% for e in all_entities if e != '' %}
+        {{ e }}: {{ states(e) }} | {{ ((now() - states[e].last_changed).total_seconds()) | round(0) if states[e] is not none else 'NE OBSTAJA' }} s{% if e.startswith('person.') %} | dist={{ distance(e) }}{% endif %}
+
+        {% endfor %}
+        === KLIMA ATRIBUTI ===
+        hvac_modes: {{ hvac_modes }}
+        fan_modes: {{ state_attr(climate_entity, 'fan_modes') }}
+        temperature (setpoint): {{ state_attr(climate_entity, 'temperature') }}
+        current_temperature: {{ state_attr(climate_entity, 'current_temperature') }}
+        current_humidity: {{ state_attr(climate_entity, 'current_humidity') }}
+        context.parent_id: {{ parent_id }}
+        state_age_min: {{ state_age_min }}
+
+        === IZRAČUNANO ===
+        actual_mode: {{ actual_mode }}
+        schedule_active: {{ schedule_active }}
+        current_temp: {{ current_temp }}
+        current_hum: {{ current_hum }}
+        outdoor_temp: {{ outdoor_temp }}
+        is_present: {{ is_present }}
+        window_open_delayed: {{ window_open_delayed }}
+        window_recently_closed: {{ window_recently_closed }}
+        window_blocked: {{ window_blocked }}
+        radiators_heating: {{ radiators_heating }}
+        heat_outdoor_ok: {{ heat_outdoor_ok }}
+        cool_outdoor_ok: {{ cool_outdoor_ok }}
+        heat_target_final: {{ heat_target_final }}  (vklop gretja pod {{ heat_target_final - heat_tol }})
+        cool_target_eff: {{ cool_target_eff }}  (vklop hlajenja nad {{ cool_target_eff + cool_tol }})
+        want_dehum: {{ want_dehum }}
+        thermo_mode: {{ thermo_mode | trim }}
+        desired_mode: {{ desired_mode }}
+        forced: {{ forced }}
+        manual_active: {{ manual_active }}
+        change_allowed: {{ change_allowed }}  (min_run={{ min_run }}, min_idle={{ min_idle }})
+        => WOULD CHANGE MODE: {{ would_change }}
+  - action: system_log.write
+    data:
+      level: warning
+      logger: climate_debug
+      message: "{{ report }}"
+  - action: persistent_notification.create
+    data:
+      notification_id: climate_debug
+      title: Debug klima
+      message: "```\n{{ report }}\n```"

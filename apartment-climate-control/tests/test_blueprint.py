@@ -453,6 +453,55 @@ class BlueprintTests(unittest.TestCase):
         )
         self.assertFalse(harness.render_cooling_persistence_trigger())
 
+    def radiator_hold_harness(
+        self, off_age_seconds: int, hold_minutes: int, climate_mode: str = "off"
+    ) -> BlueprintHarness:
+        entities = base_entities(climate_mode)
+        entities["climate.test"].attributes["current_temperature"] = 18.0
+        entities["binary_sensor.radiators"] = make_entity("off", age_seconds=off_age_seconds)
+        return self.harness(
+            {
+                "heating_sensors": ["binary_sensor.radiators"],
+                "heating_hold_minutes": hold_minutes,
+            },
+            entities,
+        )
+
+    def test_radiator_hold_blocks_heating_shortly_after_radiators_stop(self) -> None:
+        variables = self.radiator_hold_harness(3600, 180).render_variables()
+        self.assertTrue(variables["radiators_heating"])
+        self.assertEqual(variables["desired_mode"].strip(), "off")
+
+    def test_radiator_hold_expires(self) -> None:
+        variables = self.radiator_hold_harness(4 * 3600, 180).render_variables()
+        self.assertFalse(variables["radiators_heating"])
+        self.assertEqual(variables["desired_mode"].strip(), "heat")
+
+    def test_radiator_hold_zero_keeps_previous_behavior(self) -> None:
+        variables = self.radiator_hold_harness(60, 0).render_variables()
+        self.assertFalse(variables["radiators_heating"])
+        self.assertEqual(variables["desired_mode"].strip(), "heat")
+
+    def test_radiator_hold_forces_manual_heating_off(self) -> None:
+        harness = self.radiator_hold_harness(3600, 180, climate_mode="heat")
+        harness.states.entities["climate.test"].parent_id = None
+        variables = harness.render_variables()
+        self.assertTrue(variables["forced"])
+        self.assertEqual(variables["desired_mode"].strip(), "off")
+
+    def test_cooling_persistence_trigger_is_blocked_during_radiator_hold(self) -> None:
+        entities = base_entities()
+        entities["climate.test"].attributes["current_temperature"] = 27.0
+        entities["binary_sensor.radiators"] = make_entity("off", age_seconds=3600)
+        inputs = {
+            "cooling_persistence_minutes": 15,
+            "heating_sensors": ["binary_sensor.radiators"],
+            "heating_hold_minutes": 180,
+        }
+        self.assertFalse(self.harness(inputs, entities).render_cooling_persistence_trigger())
+        entities["binary_sensor.radiators"] = make_entity("off", age_seconds=4 * 3600)
+        self.assertTrue(self.harness(inputs, entities).render_cooling_persistence_trigger())
+
     def test_cooling_persistence_requires_temperature_strictly_above_start_threshold(self) -> None:
         entities = base_entities()
         entities["climate.test"].attributes["current_temperature"] = 25.5

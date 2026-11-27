@@ -55,7 +55,7 @@ To import it manually:
 - Optional person entities and distance radius for gating heating/cooling. Dehumidification can remain active when nobody is present.
 - Sensor stability delay (0-300 seconds) and optional sustained-temperature delay before cooling starts.
 - Window sensors with configurable open and close delays.
-- Radiator-heating binary sensors.
+- Radiator-heating binary sensors, with an optional hold time after they turn off.
 - Outdoor temperature sensor and heating/cooling limits.
 - Heating, cooling, and dehumidification targets.
 - Minimum compressor run and idle times.
@@ -69,6 +69,8 @@ The input names and detailed descriptions in the blueprint are in Slovenian. By 
 When person entities are selected, at least one person must be home or within the configured radius for automatic heating or cooling. If everyone is away, heating/cooling is turned off even when manual control is enabled; dehumidification remains allowed. An empty person list disables presence gating. Presence does not override manual settings during a schedule pause.
 
 Humidity sensors are averaged by default; select **Najvišja vrednost** to start dehumidification based on the most humid selected room. Temperature sensors remain averaged. Selected temperature and humidity readings must remain unchanged for the configured stability duration before they affect decisions. Cooling persistence requires the cooling-start threshold to remain exceeded continuously; setting it to `0` keeps immediate starts.
+
+**Zadrževanje po koncu gretja radiatorjev** (under **Radiatorji**, 0-360 minutes, default 180; 0 disables the hold) keeps treating a radiator-heating sensor as heating for the configured time after it turns off. Heat pumps such as Ecodan pause radiator heating to prepare domestic hot water, and the return to radiator heating can reach Home Assistant late; without a hold, the climate entity may start heating in that gap. During the hold the radiator safeguard applies exactly as while the sensor is on, including forcing a manually started heating or cooling mode off. The hold is measured from the sensor's last state change, so after a Home Assistant restart it restarts from the startup time. Re-evaluation after the hold expires happens on the periodic 5-minute check.
 
 The preventive FAN cycle is configured under **Preventivni FAN cikel**. It is disabled by default; if enabled, the default is a FAN pause after 120 minutes of uninterrupted automatic cooling, lasting 10 minutes. The interval can be set from 30 to 360 minutes and the pause from 2 to 30 minutes. It only applies to automatic cooling, and all schedule, presence, window, radiator, and temperature conditions are checked again before cooling resumes.
 
@@ -86,7 +88,7 @@ Existing automations keep their selected inputs. Review newly added inputs after
 
 ## Optional Ecodan Radiator Template
 
-`ecodan-radiatorji-template.yaml` creates a binary sensor that remains on for 20 minutes after Ecodan stops reporting radiator heating. This covers short interruptions such as domestic hot-water preparation.
+`ecodan-radiatorji-template.yaml` creates a binary sensor that remains on for 20 minutes after Ecodan stops reporting radiator heating. This covers short interruptions such as domestic hot-water preparation. If hot-water preparation or delayed state updates last longer, rely on the blueprint's **Zadrževanje po koncu gretja radiatorjev** (180 minutes by default) instead of raising `delay_off`; unlike `delay_off`, the blueprint hold errs on the blocking side after a restart.
 
 Before using it:
 
