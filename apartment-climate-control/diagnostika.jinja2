@@ -22,6 +22,7 @@
 {%- set window_sensors = [] -%}
 {%- set heating_sensors = ["<binary_sensor.ecodan_gretje_radiatorjev>"] -%}
 {%- set unavailable_blocks = false -%}
+{%- set heating_hold_min = 180 -%}
 {%- set outdoor_sensor = "<sensor.zunanja_temperatura>" -%}
 {%- set schedule_entity = "" -%}
 {%- set master_switch = "" -%}
@@ -122,10 +123,15 @@
 {%- set window_recently_closed = ns_wc.r -%}
 {%- set window_blocked = window_open_delayed or (window_recently_closed and actual_mode == 'off') -%}
 
-{%- set ns_r = namespace(r=false) -%}
+{%- set ns_r = namespace(r=false, hold_left=0) -%}
 {%- for h in expand(heating_sensors) -%}
-  {%- if h.state == 'on' or (unavailable_blocks and h.state in ['unavailable', 'unknown']) -%}
+  {%- set off_age_s = (now() - h.last_changed).total_seconds() -%}
+  {%- if h.state == 'on' or (unavailable_blocks and h.state in ['unavailable', 'unknown'])
+        or (h.state == 'off' and heating_hold_min | float(0) > 0 and off_age_s < heating_hold_min | float(0) * 60) -%}
     {%- set ns_r.r = true -%}
+  {%- endif -%}
+  {%- if h.state == 'off' and heating_hold_min | float(0) > 0 -%}
+    {%- set ns_r.hold_left = [ns_r.hold_left, heating_hold_min | float(0) - off_age_s / 60] | max -%}
   {%- endif -%}
 {%- endfor -%}
 {%- set radiators_heating = ns_r.r -%}
@@ -254,7 +260,7 @@ schedule_entity:       "{{ schedule_entity }}"  -> schedule_active = {{ schedule
 master_switch:         "{{ master_switch }}"
 is_present:            {{ is_present }}
 window_blocked:        {{ window_blocked }}
-radiators_heating:     {{ radiators_heating }}
+radiators_heating:     {{ radiators_heating }}   (zadrževanje {{ heating_hold_min }} min, preostane {{ ns_r.hold_left | round(0) }} min)
 
 --- NASTAVITVE ---
 enable_heating:        {{ enable_heating }}   heat_target: {{ heat_target }}   heat_tol: {{ heat_tol }}   heat_min_outdoor: {{ heat_min_outdoor }}

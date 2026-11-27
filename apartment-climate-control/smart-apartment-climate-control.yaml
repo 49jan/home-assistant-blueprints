@@ -5,7 +5,7 @@ blueprint:
 
     **Prioritete (od najvišje):**
     1. Odprto okno -> klima izklopljena (tudi ročno).
-    2. Radiatorji grejejo (toplotna črpalka) -> med aktivnim urnikom gretje in hlajenje nista dovoljena, razvlaževanje pa je dovoljeno; med premorom urnika radiatorji izklopijo klimo v vseh načinih.
+    2. Radiatorji grejejo (toplotna črpalka) -> med aktivnim urnikom gretje in hlajenje nista dovoljena, razvlaževanje pa je dovoljeno; med premorom urnika radiatorji izklopijo klimo v vseh načinih. Blokada lahko velja še nastavljen čas po koncu gretja radiatorjev.
     3. Previsoka vlaga -> razvlaževanje do ciljne vlage, nato se klima vrne v stanje, ki ga določa termostat (izklop, gretje, hlajenje).
     4. Termostat: gretje/hlajenje s ciljno temperaturo in dopustnim odstopanjem (mrtva cona).
     5. Tarifni zamik (neobvezno): v najdražjem časovnem bloku se ciljna temperatura gretja zniža, med predgrevanjem zviša; ob preseženi skupni moči v bloku 1 se zniža še dodatno in novo gretje se ne začne. Med predhlajanjem se zniža ciljna temperatura hlajenja.
@@ -107,6 +107,7 @@ blueprint:
           description: >
             binary_sensor, ki je vklopljen, ko toplotna črpalka greje radiatorje.
             Če je vklopljen, klima ne sme greti ali hladiti (dovoljeno je samo razvlaževanje).
+            Blokado lahko podaljšaš z zadrževanjem v razdelku Radiatorji.
           default: []
           selector:
             entity:
@@ -312,6 +313,26 @@ blueprint:
           default: false
           selector:
             boolean: {}
+        heating_hold_minutes:
+          name: Zadrževanje po koncu gretja radiatorjev (minute)
+          description: >
+            Koliko minut po tem, ko senzor gretja radiatorjev preide na "izklopljeno", ga
+            avtomatizacija še vedno obravnava, kot da radiatorji grejejo. Toplotna črpalka
+            gretje radiatorjev vmes prekine, da pripravi toplo sanitarno vodo, nato se vrne na
+            radiatorje; ta podatek pa v Home Assistant pogosto pride z zamikom. Brez zadrževanja
+            bi klima v tej vrzeli začela greti hkrati z radiatorji. Primer: pri 180 minutah klima
+            sme greti ali hladiti šele, ko radiatorji vsaj 3 ure niso greli. Med zadrževanjem
+            velja enako kot med aktivnim gretjem radiatorjev (tudi prisilni izklop ročno
+            vklopljene klime). Po ponovnem zagonu HA se čas šteje od zagona.
+            0 = brez zadrževanja (blokada traja samo, dokler je senzor vklopljen).
+          default: 180
+          selector:
+            number:
+              min: 0
+              max: 360
+              step: 5
+              unit_of_measurement: min
+              mode: box
 
     rocno:
       name: Ročno upravljanje
@@ -618,6 +639,7 @@ trigger_variables:
   presence_distance_for_trigger: !input presence_distance_km
   radiator_sensors_for_trigger: !input heating_sensors
   radiator_unavailable_blocks_for_trigger: !input heating_unavailable_blocks
+  radiator_hold_for_trigger: !input heating_hold_minutes
   window_sensors_for_trigger: !input window_sensors
   window_open_delay_for_trigger: !input window_open_delay
   window_close_delay_for_trigger: !input window_close_delay
@@ -692,7 +714,8 @@ triggers:
         {% endif %}
       {% endfor %}
       {% for radiator in radiator_sensors_for_trigger %}
-        {% if is_state(radiator, 'on') or (radiator_unavailable_blocks_for_trigger and states(radiator) in ['unknown', 'unavailable']) %}
+        {% if is_state(radiator, 'on') or (radiator_unavailable_blocks_for_trigger and states(radiator) in ['unknown', 'unavailable'])
+              or (is_state(radiator, 'off') and radiator_hold_for_trigger | float(0) > 0 and (now() - states[radiator].last_changed).total_seconds() < radiator_hold_for_trigger | float(0) * 60) %}
           {% set ns.blocked = true %}
         {% endif %}
       {% endfor %}
@@ -815,6 +838,7 @@ variables:
   open_delay: !input window_open_delay
   close_delay: !input window_close_delay
   unavailable_blocks: !input heating_unavailable_blocks
+  heating_hold_min: !input heating_hold_minutes
   allow_manual: !input allow_manual
   manual_hold_min: !input manual_hold_minutes
   min_run: !input min_run_minutes
@@ -908,7 +932,8 @@ variables:
   radiators_heating: >
     {% set ns = namespace(r=false) %}
     {% for h in expand(heating_sensors) %}
-      {% if h.state == 'on' or (unavailable_blocks and h.state in ['unavailable', 'unknown']) %}
+      {% if h.state == 'on' or (unavailable_blocks and h.state in ['unavailable', 'unknown'])
+            or (h.state == 'off' and heating_hold_min | float(0) > 0 and (now() - h.last_changed).total_seconds() < heating_hold_min | float(0) * 60) %}
         {% set ns.r = true %}
       {% endif %}
     {% endfor %}
@@ -1085,7 +1110,8 @@ actions:
                   {% endif %}
                 {% endfor %}
                 {% for radiator in expand(heating_sensors) %}
-                  {% if radiator.state == 'on' or (unavailable_blocks and radiator.state in ['unknown', 'unavailable']) %}
+                  {% if radiator.state == 'on' or (unavailable_blocks and radiator.state in ['unknown', 'unavailable'])
+                        or (radiator.state == 'off' and heating_hold_min | float(0) > 0 and (now() - radiator.last_changed).total_seconds() < heating_hold_min | float(0) * 60) %}
                     {% set ns.blocked = true %}
                   {% endif %}
                 {% endfor %}
@@ -1137,7 +1163,8 @@ actions:
                         {% endif %}
                       {% endfor %}
                       {% for radiator in expand(heating_sensors) %}
-                        {% if radiator.state == 'on' or (unavailable_blocks and radiator.state in ['unknown', 'unavailable']) %}
+                        {% if radiator.state == 'on' or (unavailable_blocks and radiator.state in ['unknown', 'unavailable'])
+                              or (radiator.state == 'off' and heating_hold_min | float(0) > 0 and (now() - radiator.last_changed).total_seconds() < heating_hold_min | float(0) * 60) %}
                           {% set ns.blocked = true %}
                         {% endif %}
                       {% endfor %}
